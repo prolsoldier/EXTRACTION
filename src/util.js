@@ -121,3 +121,18 @@ export function timeAgo(timestamp, now = Date.now()) {
   }
   return 'just now';
 }
+
+/**
+ * Turn a board name into a URL-safe slug.
+ * Restricted to [a-z0-9-] so a slug can never smuggle path or query syntax
+ * into a route.
+ */
+export function slugify(input) {
+  return String(input ?? '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+}

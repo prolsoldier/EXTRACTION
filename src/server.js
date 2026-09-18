@@ -5,7 +5,14 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { openDatabase } from './db.js';
-import { renderIndex, renderThread, renderLogin, renderError } from './views.js';
+import {
+  renderBoardIndex,
+  renderBoard,
+  renderThread,
+  renderManage,
+  renderLogin,
+  renderError,
+} from './views.js';
 import {
   posterToken,
   safeEqual,
@@ -13,12 +20,27 @@ import {
   verifyCookie,
   parseCookies,
   clientIp,
+  slugify,
 } from './util.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_MESSAGE_LENGTH = 10_000;
 const MAX_TITLE_LENGTH = 200;
+const MAX_BOARD_NAME_LENGTH = 60;
+const MAX_BOARD_DESC_LENGTH = 200;
+
+/**
+ * Seeded only when the boards table is empty. Everything here is editable and
+ * deletable from /manage, so these are a starting point, not a fixture.
+ */
+const DEFAULT_BOARDS = [
+  { slug: 'organizing', name: 'Organizing', description: 'Workplace and tenant organizing. Tactics, wins, losses.', position: 1 },
+  { slug: 'theory', name: 'Theory', description: 'Reading, study groups, and argument.', position: 2 },
+  { slug: 'news', name: 'News & Analysis', description: 'What happened, and what it means.', position: 3 },
+  { slug: 'femboys', name: 'Femboy Fan Club', description: 'Be decent to each other in here.', position: 4 },
+  { slug: 'general', name: 'General', description: 'Everything else.', position: 5 },
+];
 
 const SECURITY_HEADERS = {
   'Content-Security-Policy':
@@ -62,6 +84,7 @@ export function createApp(config) {
     trustProxy = false,
     postsPerMinute = 5,
     loginsPerHour = 10,
+    seedBoards = DEFAULT_BOARDS,
   } = config;
 
   if (!adminToken) throw new Error('ADMIN_TOKEN is required');
@@ -69,6 +92,12 @@ export function createApp(config) {
 
   const board = openDatabase(dbPath);
   const css = fs.readFileSync(path.join(HERE, '..', 'public', 'style.css'), 'utf8');
+
+  // Only on a genuinely fresh database, so an owner who deletes a seeded board
+  // does not find it resurrected on the next restart.
+  if (board.isEmpty()) {
+    for (const b of seedBoards) board.createBoard(b);
+  }
 
   // Keep the limiter table from turning into a record of who posted when.
   const pruneTimer = setInterval(() => board.pruneRateLimits(), 10 * 60_000);
@@ -120,15 +149,35 @@ export function createApp(config) {
         return res.end(JSON.stringify({ ok: true, ...board.stats() }));
       }
 
-      // ---- board ----------------------------------------------------
+      // ---- boards ---------------------------------------------------
+      const boards = board.listBoards();
+
       if (req.method === 'GET' && pathname === '/') {
         return send(
           200,
-          renderIndex({
+          renderBoardIndex({
             title: boardTitle,
             tagline: boardTagline,
             isAdmin,
-            threads: board.listThreads(),
+            boards,
+            notice,
+          }),
+        );
+      }
+
+      const boardMatch = pathname.match(/^\/b\/([a-z0-9-]{1,32})$/);
+      if (req.method === 'GET' && boardMatch) {
+        const current = board.getBoardBySlug(boardMatch[1]);
+        if (!current) return fail(404, 'That board does not exist.');
+        return send(
+          200,
+          renderBoard({
+            title: boardTitle,
+            tagline: boardTagline,
+            isAdmin,
+            board: current,
+            boards,
+            threads: board.listThreads({ boardId: current.id }),
             notice,
           }),
         );
@@ -144,6 +193,8 @@ export function createApp(config) {
             title: boardTitle,
             tagline: boardTagline,
             isAdmin,
+            board: thread.board_id ? board.getBoard(thread.board_id) : null,
+            boards,
             thread,
             messages: board.listMessages(thread.id),
             notice,
@@ -185,14 +236,20 @@ export function createApp(config) {
       }
 
       // ---- posting --------------------------------------------------
-      if (req.method === 'POST' && pathname === '/threads') {
+      const newThreadMatch = pathname.match(/^\/b\/([a-z0-9-]{1,32})\/threads$/);
+      if (req.method === 'POST' && newThreadMatch) {
         if (!requireAdmin()) return;
+        const current = board.getBoardBySlug(newThreadMatch[1]);
+        if (!current) return fail(404, 'That board does not exist.');
+        if (current.locked) return fail(403, 'That board is locked.');
+
         const form = await readBody(req);
-        if (form.website) return redirect('/'); // honeypot: accept, discard
+        if (form.website) return redirect(`/b/${current.slug}`); // honeypot
         const title = String(form.title ?? '').trim().slice(0, MAX_TITLE_LENGTH);
         const body = String(form.body ?? '').trim().slice(0, MAX_MESSAGE_LENGTH);
         if (!title) return fail(400, 'A thread needs a title.');
-        const id = board.createThread({ title, body });
+
+        const id = board.createThread({ boardId: current.id, title, body });
         return redirect(`/threads/${id}`);
       }
 
@@ -200,7 +257,9 @@ export function createApp(config) {
       if (req.method === 'POST' && replyMatch) {
         const thread = board.getThread(Number(replyMatch[1]));
         if (!thread) return fail(404, 'That thread does not exist.');
-        if (thread.locked && !isAdmin) return fail(403, 'This thread is locked.');
+        if ((thread.locked || thread.board_locked) && !isAdmin) {
+          return fail(403, 'This thread is locked.');
+        }
 
         const form = await readBody(req);
         if (form.website) return redirect(`/threads/${thread.id}`); // honeypot
@@ -220,6 +279,63 @@ export function createApp(config) {
         return redirect(`/threads/${thread.id}#m${id}`);
       }
 
+      // ---- board management (owner only) -----------------------------
+      if (req.method === 'GET' && pathname === '/manage') {
+        if (!requireAdmin()) return;
+        return send(
+          200,
+          renderManage({ title: boardTitle, tagline: boardTagline, boards, notice }),
+        );
+      }
+
+      if (req.method === 'POST' && pathname === '/manage') {
+        if (!requireAdmin()) return;
+        const form = await readBody(req);
+        const name = String(form.name ?? '').trim().slice(0, MAX_BOARD_NAME_LENGTH);
+        const description = String(form.description ?? '')
+          .trim()
+          .slice(0, MAX_BOARD_DESC_LENGTH);
+        if (!name) return fail(400, 'A board needs a name.');
+
+        const slug = slugify(form.slug || name);
+        if (!slug) return fail(400, 'That name does not produce a usable slug. Set one manually.');
+        if (board.getBoardBySlug(slug)) return fail(409, `A board at /b/${slug} already exists.`);
+
+        const position = boards.length ? Math.max(...boards.map((b) => b.position)) + 1 : 1;
+        board.createBoard({ slug, name, description, position });
+        return redirect(`/b/${slug}`);
+      }
+
+      const manageMatch = pathname.match(/^\/manage\/(\d+)(?:\/(lock|delete))?$/);
+      if (req.method === 'POST' && manageMatch) {
+        if (!requireAdmin()) return;
+        const [, rawId, action] = manageMatch;
+        const current = board.getBoard(Number(rawId));
+        if (!current) return fail(404, 'That board does not exist.');
+
+        if (action === 'delete') {
+          board.setBoardFlag(current.id, 'deleted', 1);
+          return redirect('/manage?notice=Board+hidden.+Its+threads+are+still+on+disk.');
+        }
+        if (action === 'lock') {
+          board.setBoardFlag(current.id, 'locked', current.locked ? 0 : 1);
+          return redirect('/manage');
+        }
+
+        const form = await readBody(req);
+        const name = String(form.name ?? '').trim().slice(0, MAX_BOARD_NAME_LENGTH);
+        const description = String(form.description ?? '')
+          .trim()
+          .slice(0, MAX_BOARD_DESC_LENGTH);
+        if (!name) return fail(400, 'A board needs a name.');
+
+        const parsed = Number.parseInt(form.position, 10);
+        const position = Number.isFinite(parsed) ? parsed : current.position;
+
+        board.updateBoard(current.id, { name, description, position });
+        return redirect('/manage?notice=Saved.');
+      }
+
       // ---- moderation ------------------------------------------------
       const flagMatch = pathname.match(/^\/threads\/(\d+)\/(pin|lock|delete)$/);
       if (req.method === 'POST' && flagMatch) {
@@ -230,7 +346,8 @@ export function createApp(config) {
 
         if (action === 'delete') {
           board.setThreadFlag(thread.id, 'deleted', 1);
-          return redirect('/?notice=Thread+deleted.');
+          const back = thread.board_slug ? `/b/${thread.board_slug}` : '/';
+          return redirect(`${back}?notice=Thread+deleted.`);
         }
         const field = action === 'pin' ? 'pinned' : 'locked';
         board.setThreadFlag(thread.id, field, thread[field] ? 0 : 1);

@@ -1,6 +1,15 @@
 import { escapeHtml, renderBody, timeAgo } from './util.js';
 
-function layout({ title, tagline, isAdmin, body, notice = '' }) {
+function layout({ title, tagline, isAdmin, body, boards = [], activeSlug = '', notice = '' }) {
+  const boardNav = boards.length
+    ? `<nav class="board-nav">${boards
+        .map(
+          (b) =>
+            `<a class="board-tab${b.slug === activeSlug ? ' active' : ''}" href="/b/${escapeHtml(b.slug)}">${escapeHtml(b.name)}</a>`,
+        )
+        .join('')}</nav>`
+    : '';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -14,10 +23,11 @@ function layout({ title, tagline, isAdmin, body, notice = '' }) {
 <header class="site-header">
   <a class="brand" href="/">${escapeHtml(title)}</a>
   <p class="tagline">${escapeHtml(tagline)}</p>
-  <nav>
+  ${boardNav}
+  <nav class="owner-nav">
     ${
       isAdmin
-        ? '<span class="badge owner">owner mode</span> <form class="inline" method="post" action="/logout"><button class="linkish" type="submit">log out</button></form>'
+        ? '<span class="badge owner">owner mode</span> <a class="linkish" href="/manage">manage boards</a> <form class="inline" method="post" action="/logout"><button class="linkish" type="submit">log out</button></form>'
         : '<a class="linkish" href="/login">owner login</a>'
     }
   </nav>
@@ -33,11 +43,44 @@ ${body}
 </html>`;
 }
 
-export function renderIndex({ title, tagline, isAdmin, threads, notice }) {
-  const newThreadForm = isAdmin
-    ? `<section class="card compose">
-  <h2>Start a thread</h2>
-  <form method="post" action="/threads">
+/** Front page: the list of boards on this instance. */
+export function renderBoardIndex({ title, tagline, isAdmin, boards, notice }) {
+  const list = boards.length
+    ? boards
+        .map(
+          (b) => `<li class="board-row">
+  <a class="board-link" href="/b/${escapeHtml(b.slug)}">${escapeHtml(b.name)}</a>
+  ${b.description ? `<p class="board-desc">${escapeHtml(b.description)}</p>` : ''}
+  <div class="meta">
+    ${b.locked ? '<span class="badge locked">locked</span>' : ''}
+    <span>${b.thread_count} ${b.thread_count === 1 ? 'thread' : 'threads'}</span>
+    ${b.last_active ? `<span>&middot;</span><span>active ${escapeHtml(timeAgo(b.last_active))}</span>` : ''}
+  </div>
+</li>`,
+        )
+        .join('')
+    : '<li class="empty">No boards yet.</li>';
+
+  return layout({
+    title,
+    tagline,
+    isAdmin,
+    boards,
+    notice,
+    body: `<section class="card">
+  <h2>Boards</h2>
+  <ul class="boards">${list}</ul>
+</section>`,
+  });
+}
+
+/** One board: its threads, plus the owner's new-thread form. */
+export function renderBoard({ title, tagline, isAdmin, board, boards, threads, notice }) {
+  const newThreadForm =
+    isAdmin && !board.locked
+      ? `<section class="card compose">
+  <h2>Start a thread in ${escapeHtml(board.name)}</h2>
+  <form method="post" action="/b/${escapeHtml(board.slug)}/threads">
     <label>Title
       <input type="text" name="title" maxlength="200" required autocomplete="off">
     </label>
@@ -48,7 +91,7 @@ export function renderIndex({ title, tagline, isAdmin, threads, notice }) {
     <button type="submit">Post thread</button>
   </form>
 </section>`
-    : '';
+      : '';
 
   const list = threads.length
     ? threads
@@ -68,19 +111,24 @@ export function renderIndex({ title, tagline, isAdmin, threads, notice }) {
     : '<li class="empty">Nothing here yet.</li>';
 
   return layout({
-    title,
+    title: `${board.name} — ${title}`,
     tagline,
     isAdmin,
+    boards,
+    activeSlug: board.slug,
     notice,
-    body: `${newThreadForm}
+    body: `<p class="breadcrumb"><a href="/">&larr; all boards</a></p>
+${newThreadForm}
 <section class="card">
-  <h2>Threads</h2>
+  <h2>${escapeHtml(board.name)}</h2>
+  ${board.description ? `<p class="board-desc">${escapeHtml(board.description)}</p>` : ''}
+  ${board.locked ? '<p class="locked-note">This board is locked. No new threads or replies.</p>' : ''}
   <ul class="threads">${list}</ul>
 </section>`,
   });
 }
 
-export function renderThread({ title, tagline, isAdmin, thread, messages, notice }) {
+export function renderThread({ title, tagline, isAdmin, board, boards, thread, messages, notice }) {
   const posts = messages
     .map((m) => {
       if (m.deleted) {
@@ -103,8 +151,9 @@ export function renderThread({ title, tagline, isAdmin, thread, messages, notice
     })
     .join('');
 
-  const replyForm = thread.locked
-    ? '<p class="locked-note">This thread is locked. No new replies.</p>'
+  const closed = thread.locked || thread.board_locked;
+  const replyForm = closed
+    ? `<p class="locked-note">${thread.locked ? 'This thread is locked.' : 'This board is locked.'} No new replies.</p>`
     : `<form class="reply" method="post" action="/threads/${thread.id}/messages">
   <label>Your message <span class="hint">posted anonymously</span>
     <textarea name="body" rows="5" maxlength="10000" required placeholder="Say what you need to say."></textarea>
@@ -127,12 +176,18 @@ export function renderThread({ title, tagline, isAdmin, thread, messages, notice
 </div>`
     : '';
 
+  const crumb = board
+    ? `<p class="breadcrumb"><a href="/">all boards</a> / <a href="/b/${escapeHtml(board.slug)}">${escapeHtml(board.name)}</a></p>`
+    : '<p class="breadcrumb"><a href="/">&larr; all boards</a></p>';
+
   return layout({
     title: `${thread.title} — ${title}`,
     tagline,
     isAdmin,
+    boards,
+    activeSlug: board?.slug ?? '',
     notice,
-    body: `<p class="breadcrumb"><a href="/">&larr; all threads</a></p>
+    body: `${crumb}
 <section class="card">
   <h2>${escapeHtml(thread.title)}</h2>
   <div class="meta">opened ${escapeHtml(timeAgo(thread.created_at))}</div>
@@ -144,6 +199,70 @@ export function renderThread({ title, tagline, isAdmin, thread, messages, notice
 </section>
 <section class="card compose">
   ${replyForm}
+</section>`,
+  });
+}
+
+/** Owner-only board management. */
+export function renderManage({ title, tagline, boards, notice }) {
+  const rows = boards
+    .map(
+      (b) => `<li class="manage-row">
+  <form method="post" action="/manage/${b.id}">
+    <div class="manage-grid">
+      <label>Name
+        <input type="text" name="name" value="${escapeHtml(b.name)}" maxlength="60" required>
+      </label>
+      <label>Order
+        <input type="text" name="position" value="${escapeHtml(b.position)}" maxlength="5" inputmode="numeric">
+      </label>
+    </div>
+    <label>Description
+      <input type="text" name="description" value="${escapeHtml(b.description)}" maxlength="200">
+    </label>
+    <div class="admin-bar">
+      <span class="slug">/b/${escapeHtml(b.slug)}</span>
+      <button type="submit">save</button>
+    </div>
+  </form>
+  <div class="admin-bar">
+    <form class="inline" method="post" action="/manage/${b.id}/lock">
+      <button type="submit">${b.locked ? 'unlock' : 'lock'}</button>
+    </form>
+    <form class="inline" method="post" action="/manage/${b.id}/delete">
+      <button class="danger" type="submit">delete board</button>
+    </form>
+  </div>
+</li>`,
+    )
+    .join('');
+
+  return layout({
+    title: `Manage boards — ${title}`,
+    tagline,
+    isAdmin: true,
+    boards,
+    notice,
+    body: `<p class="breadcrumb"><a href="/">&larr; all boards</a></p>
+<section class="card compose">
+  <h2>New board</h2>
+  <form method="post" action="/manage">
+    <label>Name
+      <input type="text" name="name" maxlength="60" required autocomplete="off">
+    </label>
+    <label>Description <span class="hint">optional</span>
+      <input type="text" name="description" maxlength="200" autocomplete="off">
+    </label>
+    <label>Slug <span class="hint">optional, derived from the name if left blank</span>
+      <input type="text" name="slug" maxlength="32" autocomplete="off">
+    </label>
+    <button type="submit">Create board</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Existing boards</h2>
+  <ul class="manage">${rows || '<li class="empty">No boards yet.</li>'}</ul>
+  <p class="hint">Deleting a board hides it and its threads. Nothing is erased from disk.</p>
 </section>`,
   });
 }

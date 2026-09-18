@@ -3,8 +3,19 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS boards (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug        TEXT    NOT NULL UNIQUE,
+  name        TEXT    NOT NULL,
+  description TEXT    NOT NULL DEFAULT '',
+  position    INTEGER NOT NULL DEFAULT 0,
+  locked      INTEGER NOT NULL DEFAULT 0,
+  deleted     INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS threads (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  board_id    INTEGER REFERENCES boards(id),
   title       TEXT    NOT NULL,
   body        TEXT    NOT NULL DEFAULT '',
   created_at  INTEGER NOT NULL,
@@ -32,7 +43,8 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, id);
-CREATE INDEX IF NOT EXISTS idx_threads_bumped  ON threads(pinned DESC, bumped_at DESC);
+CREATE INDEX IF NOT EXISTS idx_threads_bumped  ON threads(board_id, pinned DESC, bumped_at DESC);
+CREATE INDEX IF NOT EXISTS idx_boards_position ON boards(position, id);
 `;
 
 export function openDatabase(dbPath) {
@@ -43,7 +55,35 @@ export function openDatabase(dbPath) {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec(SCHEMA);
+  migrate(db);
   return new Board(db);
+}
+
+/**
+ * Bring a database created before boards existed up to the current schema.
+ * Safe to run on every start: each step checks before it acts.
+ */
+function migrate(db) {
+  const columns = db.prepare('PRAGMA table_info(threads)').all().map((c) => c.name);
+
+  if (!columns.includes('board_id')) {
+    db.exec('ALTER TABLE threads ADD COLUMN board_id INTEGER REFERENCES boards(id)');
+  }
+
+  const orphans = db
+    .prepare('SELECT COUNT(*) AS n FROM threads WHERE board_id IS NULL')
+    .get().n;
+
+  if (orphans > 0) {
+    // Park pre-existing threads on a general board rather than dropping them.
+    db.prepare(
+      `INSERT INTO boards (slug, name, description, position)
+       VALUES ('general', 'General', 'Everything else.', 999)
+       ON CONFLICT(slug) DO NOTHING`,
+    ).run();
+    const general = db.prepare("SELECT id FROM boards WHERE slug = 'general'").get();
+    db.prepare('UPDATE threads SET board_id = ? WHERE board_id IS NULL').run(general.id);
+  }
 }
 
 export class Board {
@@ -55,34 +95,94 @@ export class Board {
     this.db.close();
   }
 
-  // ---- threads -------------------------------------------------------
+  // ---- boards --------------------------------------------------------
 
-  createThread({ title, body = '', now = Date.now() }) {
+  createBoard({ slug, name, description = '', position = 0 }) {
     const info = this.db
       .prepare(
-        'INSERT INTO threads (title, body, created_at, bumped_at) VALUES (?, ?, ?, ?)',
+        'INSERT INTO boards (slug, name, description, position) VALUES (?, ?, ?, ?)',
       )
-      .run(title, body, now, now);
+      .run(slug, name, description, position);
     return Number(info.lastInsertRowid);
   }
 
-  listThreads({ limit = 50, offset = 0 } = {}) {
+  listBoards() {
     return this.db
       .prepare(
-        `SELECT t.id, t.title, t.body, t.created_at, t.bumped_at, t.pinned, t.locked,
+        `SELECT b.id, b.slug, b.name, b.description, b.position, b.locked,
+                (SELECT COUNT(*) FROM threads t
+                  WHERE t.board_id = b.id AND t.deleted = 0) AS thread_count,
+                (SELECT MAX(t.bumped_at) FROM threads t
+                  WHERE t.board_id = b.id AND t.deleted = 0) AS last_active
+           FROM boards b
+          WHERE b.deleted = 0
+          ORDER BY b.position ASC, b.id ASC`,
+      )
+      .all();
+  }
+
+  getBoardBySlug(slug) {
+    return this.db
+      .prepare('SELECT * FROM boards WHERE slug = ? AND deleted = 0')
+      .get(slug);
+  }
+
+  getBoard(id) {
+    return this.db.prepare('SELECT * FROM boards WHERE id = ? AND deleted = 0').get(id);
+  }
+
+  updateBoard(id, { name, description, position }) {
+    this.db
+      .prepare('UPDATE boards SET name = ?, description = ?, position = ? WHERE id = ?')
+      .run(name, description, position, id);
+  }
+
+  setBoardFlag(id, field, value) {
+    if (!['locked', 'deleted'].includes(field)) {
+      throw new Error(`refusing to update unknown column: ${field}`);
+    }
+    this.db.prepare(`UPDATE boards SET ${field} = ? WHERE id = ?`).run(value ? 1 : 0, id);
+  }
+
+  /** True when no board exists yet, so the caller knows to seed defaults. */
+  isEmpty() {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM boards').get().n === 0;
+  }
+
+  // ---- threads -------------------------------------------------------
+
+  createThread({ boardId, title, body = '', now = Date.now() }) {
+    const info = this.db
+      .prepare(
+        'INSERT INTO threads (board_id, title, body, created_at, bumped_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(boardId, title, body, now, now);
+    return Number(info.lastInsertRowid);
+  }
+
+  listThreads({ boardId, limit = 50, offset = 0 } = {}) {
+    return this.db
+      .prepare(
+        `SELECT t.id, t.board_id, t.title, t.body, t.created_at, t.bumped_at,
+                t.pinned, t.locked,
                 (SELECT COUNT(*) FROM messages m
                   WHERE m.thread_id = t.id AND m.deleted = 0) AS reply_count
            FROM threads t
-          WHERE t.deleted = 0
+          WHERE t.deleted = 0 AND (? IS NULL OR t.board_id = ?)
           ORDER BY t.pinned DESC, t.bumped_at DESC
           LIMIT ? OFFSET ?`,
       )
-      .all(limit, offset);
+      .all(boardId ?? null, boardId ?? null, limit, offset);
   }
 
   getThread(id) {
     return this.db
-      .prepare('SELECT * FROM threads WHERE id = ? AND deleted = 0')
+      .prepare(
+        `SELECT t.*, b.slug AS board_slug, b.name AS board_name, b.locked AS board_locked
+           FROM threads t
+           LEFT JOIN boards b ON b.id = t.board_id
+          WHERE t.id = ? AND t.deleted = 0`,
+      )
       .get(id);
   }
 
@@ -155,12 +255,15 @@ export class Board {
   }
 
   stats() {
+    const boards = this.db
+      .prepare('SELECT COUNT(*) AS n FROM boards WHERE deleted = 0')
+      .get().n;
     const threads = this.db
       .prepare('SELECT COUNT(*) AS n FROM threads WHERE deleted = 0')
       .get().n;
     const messages = this.db
       .prepare('SELECT COUNT(*) AS n FROM messages WHERE deleted = 0')
       .get().n;
-    return { threads, messages };
+    return { boards, threads, messages };
   }
 }

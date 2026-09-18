@@ -215,3 +215,68 @@ footer {
   .brand { font-size: 1.4rem; }
   .card { padding: 16px; }
 }
+
+/* ---- board navigation ---- */
+.board-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+.board-tab {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.board-tab:hover { color: var(--text); border-color: var(--muted); }
+.board-tab.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.owner-nav { display: flex; gap: 12px; align-items: center; }
+
+/* ---- board index ---- */
+.boards { list-style: none; margin: 0; padding: 0; }
+.board-row {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.board-row:last-child { border-bottom: none; }
+.board-link {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 1.1rem;
+  text-decoration: none;
+}
+.board-link:hover { color: var(--accent); text-decoration: underline; }
+.board-desc { margin: 4px 0; color: var(--muted); font-size: 0.9rem; }
+
+/* ---- manage boards ---- */
+.manage { list-style: none; margin: 0; padding: 0; }
+.manage-row {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--border);
+}
+.manage-row:last-child { border-bottom: none; }
+.manage-grid {
+  display: grid;
+  grid-template-columns: 1fr 100px;
+  gap: 12px;
+}
+.slug {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  color: var(--muted);
+  align-self: center;
+  margin-right: auto;
+}
+
+@media (max-width: 520px) {
+  .manage-grid { grid-template-columns: 1fr; }
+}

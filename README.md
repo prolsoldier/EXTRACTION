@@ -1,7 +1,8 @@
 # EXTRACTION — anonboard
 
-A self-hosted anonymous message board. You post threads; anyone can reply
-anonymously. No accounts, no analytics, no IP addresses on disk.
+A self-hosted anonymous message board with multiple boards on one instance.
+You start threads; anyone can reply anonymously. No accounts, no analytics,
+no IP addresses on disk.
 
 **Zero dependencies.** Nothing from npm — it runs on the Node standard library
 and the built-in `node:sqlite`. There is no install step, no lockfile, no
@@ -17,11 +18,32 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # -> 
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # -> SECRET_KEY
 
 npm start          # http://127.0.0.1:3000
-npm test           # 17 tests, no network needed
+npm test           # 28 tests, no network needed
 npm run dev        # auto-restart on change
 ```
 
 Requires Node 22.5 or newer (for `node:sqlite`).
+
+## Boards
+
+One instance hosts as many boards as you want, each with its own name,
+description and URL. A fresh database is seeded with:
+
+| Slug | Board |
+|---|---|
+| `/b/organizing` | Organizing — workplace and tenant organizing |
+| `/b/theory` | Theory — reading, study groups, argument |
+| `/b/news` | News & Analysis |
+| `/b/femboys` | Femboy Fan Club |
+| `/b/general` | General |
+
+Those are a starting point, not a fixture. Rename, reorder, lock, delete or
+add boards at `/manage` — and the seed only runs on a genuinely empty
+database, so a board you delete stays deleted across restarts.
+
+Locking a board stops new threads and new replies but leaves everything
+readable. Deleting one hides it and its threads; nothing is erased from disk,
+so a deletion made in anger is recoverable with a SQL update.
 
 ## How it works
 
@@ -29,10 +51,11 @@ Two kinds of visitor:
 
 | | Anonymous visitor | Owner |
 |---|---|---|
-| Read the board | yes | yes |
+| Read any board | yes | yes |
 | Reply to a thread | yes, no login | yes |
 | Start a thread | no | yes |
-| Pin / lock / delete | no | yes |
+| Pin / lock / delete threads | no | yes |
+| Create and manage boards | no | yes |
 
 The owner logs in at `/login` with `ADMIN_TOKEN`. That is the only login in the
 system. Everyone else just types and posts.
@@ -68,6 +91,14 @@ The privacy guarantee is only as good as the machine it runs on. Run it
 somewhere you control. If you put it behind a reverse proxy, that proxy's
 access log is the weak link — turn it off.
 
+**Know what this is not.** This makes posters anonymous *to each other and to
+you*. It does not hide anything from someone watching the network, and it does
+not protect the server itself: whoever controls the host, the hosting company,
+or the domain can still take it down or be compelled to hand it over. If people
+are going to discuss anything that puts them at risk, that threat model needs
+answering somewhere other than this codebase — a board like this is for open
+discussion, not for operational security.
+
 ## Other hardening
 
 - Every piece of user text is HTML-escaped before it reaches a page; the test
@@ -101,12 +132,23 @@ is affected.
 ## Layout
 
 ```
-src/server.js   HTTP routing, auth, moderation, CLI entry point
-src/db.js       SQLite schema and queries
+src/server.js   HTTP routing, auth, moderation, board management, CLI entry
+src/db.js       SQLite schema, migrations, and queries
 src/views.js    HTML rendering
-src/util.js     escaping, hashing, cookie signing, rate-limit tokens
+src/util.js     escaping, hashing, cookie signing, slugs, rate-limit tokens
 public/style.css
 test/board.test.js
+```
+
+Routes:
+
+```
+/                       board index
+/b/<slug>               threads in one board
+/threads/<id>           a thread and its replies
+/manage                 board management (owner only)
+/login                  owner login
+/healthz                board, thread and message counts
 ```
 
 ## Formatting
