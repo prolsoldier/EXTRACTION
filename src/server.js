@@ -8,6 +8,7 @@ import { openDatabase } from './db.js';
 import {
   renderBoardIndex,
   renderBoard,
+  renderWall,
   renderThread,
   renderManage,
   renderLogin,
@@ -29,6 +30,7 @@ const MAX_MESSAGE_LENGTH = 10_000;
 const MAX_TITLE_LENGTH = 200;
 const MAX_BOARD_NAME_LENGTH = 60;
 const MAX_BOARD_DESC_LENGTH = 200;
+const MAX_NOTE_LENGTH = 1000;
 
 /**
  * Seeded only when the boards table is empty. Everything here is editable and
@@ -40,6 +42,13 @@ const DEFAULT_BOARDS = [
   { slug: 'news', name: 'News & Analysis', description: 'What happened, and what it means.', position: 3 },
   { slug: 'femboys', name: 'Femboy Fan Club', description: 'Be decent to each other in here.', position: 4 },
   { slug: 'general', name: 'General', description: 'Everything else.', position: 5 },
+  {
+    slug: 'kind-words',
+    name: 'Kind Words',
+    description: 'Leave an anonymous note for someone. Nothing cruel.',
+    kind: 'wall',
+    position: 6,
+  },
 ];
 
 const SECURITY_HEADERS = {
@@ -169,6 +178,24 @@ export function createApp(config) {
       if (req.method === 'GET' && boardMatch) {
         const current = board.getBoardBySlug(boardMatch[1]);
         if (!current) return fail(404, 'That board does not exist.');
+
+        if (current.kind === 'wall') {
+          const wall = board.getWallThread(current.id);
+          const notes = wall ? board.listMessages(wall.id).reverse() : [];
+          return send(
+            200,
+            renderWall({
+              title: boardTitle,
+              tagline: boardTagline,
+              isAdmin,
+              board: current,
+              boards,
+              messages: notes,
+              notice,
+            }),
+          );
+        }
+
         return send(
           200,
           renderBoard({
@@ -236,11 +263,38 @@ export function createApp(config) {
       }
 
       // ---- posting --------------------------------------------------
+      const wallPostMatch = pathname.match(/^\/b\/([a-z0-9-]{1,32})\/post$/);
+      if (req.method === 'POST' && wallPostMatch) {
+        const current = board.getBoardBySlug(wallPostMatch[1]);
+        if (!current) return fail(404, 'That board does not exist.');
+        if (current.kind !== 'wall') return fail(404, 'That board does not take notes.');
+        if (current.locked && !isAdmin) return fail(403, 'This wall is closed.');
+
+        const form = await readBody(req);
+        if (form.website) return redirect(`/b/${current.slug}`); // honeypot
+
+        const body = String(form.body ?? '').trim().slice(0, MAX_NOTE_LENGTH);
+        if (!body) return fail(400, 'An empty note has nothing to say.');
+
+        if (!isAdmin) {
+          const token = posterToken(clientIp(req, trustProxy), secretKey);
+          if (!board.checkRateLimit(token, { limit: postsPerMinute, windowMs: 60_000 })) {
+            return fail(429, 'You are posting too quickly. Wait a minute and try again.');
+          }
+        }
+
+        const wall = board.getWallThread(current.id);
+        if (!wall) return fail(500, 'That wall is missing its backing thread.');
+        board.addMessage({ threadId: wall.id, body, isOwner: isAdmin });
+        return redirect(`/b/${current.slug}?notice=Posted.`);
+      }
+
       const newThreadMatch = pathname.match(/^\/b\/([a-z0-9-]{1,32})\/threads$/);
       if (req.method === 'POST' && newThreadMatch) {
         if (!requireAdmin()) return;
         const current = board.getBoardBySlug(newThreadMatch[1]);
         if (!current) return fail(404, 'That board does not exist.');
+        if (current.kind === 'wall') return fail(404, 'A wall does not take threads.');
         if (current.locked) return fail(403, 'That board is locked.');
 
         const form = await readBody(req);
@@ -301,8 +355,9 @@ export function createApp(config) {
         if (!slug) return fail(400, 'That name does not produce a usable slug. Set one manually.');
         if (board.getBoardBySlug(slug)) return fail(409, `A board at /b/${slug} already exists.`);
 
+        const kind = form.kind === 'wall' ? 'wall' : 'forum';
         const position = boards.length ? Math.max(...boards.map((b) => b.position)) + 1 : 1;
-        board.createBoard({ slug, name, description, position });
+        board.createBoard({ slug, name, description, kind, position });
         return redirect(`/b/${slug}`);
       }
 

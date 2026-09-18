@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS boards (
   slug        TEXT    NOT NULL UNIQUE,
   name        TEXT    NOT NULL,
   description TEXT    NOT NULL DEFAULT '',
+  kind        TEXT    NOT NULL DEFAULT 'forum',
   position    INTEGER NOT NULL DEFAULT 0,
   locked      INTEGER NOT NULL DEFAULT 0,
   deleted     INTEGER NOT NULL DEFAULT 0
@@ -64,6 +65,11 @@ export function openDatabase(dbPath) {
  * Safe to run on every start: each step checks before it acts.
  */
 function migrate(db) {
+  const boardColumns = db.prepare('PRAGMA table_info(boards)').all().map((c) => c.name);
+  if (!boardColumns.includes('kind')) {
+    db.exec("ALTER TABLE boards ADD COLUMN kind TEXT NOT NULL DEFAULT 'forum'");
+  }
+
   const columns = db.prepare('PRAGMA table_info(threads)').all().map((c) => c.name);
 
   if (!columns.includes('board_id')) {
@@ -97,21 +103,45 @@ export class Board {
 
   // ---- boards --------------------------------------------------------
 
-  createBoard({ slug, name, description = '', position = 0 }) {
+  createBoard({ slug, name, description = '', kind = 'forum', position = 0, now = Date.now() }) {
+    if (!['forum', 'wall'].includes(kind)) {
+      throw new Error(`unknown board kind: ${kind}`);
+    }
     const info = this.db
       .prepare(
-        'INSERT INTO boards (slug, name, description, position) VALUES (?, ?, ?, ?)',
+        'INSERT INTO boards (slug, name, description, kind, position) VALUES (?, ?, ?, ?, ?)',
       )
-      .run(slug, name, description, position);
-    return Number(info.lastInsertRowid);
+      .run(slug, name, description, kind, position);
+    const boardId = Number(info.lastInsertRowid);
+
+    // A wall is one continuous stream, so it carries a single backing thread
+    // that visitors never see. This reuses the messages table as-is.
+    if (kind === 'wall') {
+      this.db
+        .prepare(
+          'INSERT INTO threads (board_id, title, body, created_at, bumped_at) VALUES (?, ?, ?, ?, ?)',
+        )
+        .run(boardId, name, '', now, now);
+    }
+    return boardId;
+  }
+
+  /** The single backing thread behind a wall board. */
+  getWallThread(boardId) {
+    return this.db
+      .prepare('SELECT * FROM threads WHERE board_id = ? AND deleted = 0 ORDER BY id ASC LIMIT 1')
+      .get(boardId);
   }
 
   listBoards() {
     return this.db
       .prepare(
-        `SELECT b.id, b.slug, b.name, b.description, b.position, b.locked,
+        `SELECT b.id, b.slug, b.name, b.description, b.kind, b.position, b.locked,
                 (SELECT COUNT(*) FROM threads t
                   WHERE t.board_id = b.id AND t.deleted = 0) AS thread_count,
+                (SELECT COUNT(*) FROM messages m
+                   JOIN threads t ON t.id = m.thread_id
+                  WHERE t.board_id = b.id AND m.deleted = 0) AS message_count,
                 (SELECT MAX(t.bumped_at) FROM threads t
                   WHERE t.board_id = b.id AND t.deleted = 0) AS last_active
            FROM boards b

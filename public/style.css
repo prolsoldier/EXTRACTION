@@ -280,3 +280,29 @@ footer {
 @media (max-width: 520px) {
   .manage-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- wall boards ---- */
+.notes { list-style: none; margin: 0; padding: 0; }
+.note {
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+}
+.note .post-meta { margin: 8px 0 0; }
+
+select {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }

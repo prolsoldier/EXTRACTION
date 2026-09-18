@@ -18,7 +18,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # -> 
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # -> SECRET_KEY
 
 npm start          # http://127.0.0.1:3000
-npm test           # 28 tests, no network needed
+npm test           # 35 tests, no network needed
 npm run dev        # auto-restart on change
 ```
 
@@ -36,10 +36,23 @@ description and URL. A fresh database is seeded with:
 | `/b/news` | News & Analysis |
 | `/b/femboys` | Femboy Fan Club |
 | `/b/general` | General |
+| `/b/kind-words` | Kind Words — an anonymous notes wall |
 
 Those are a starting point, not a fixture. Rename, reorder, lock, delete or
 add boards at `/manage` — and the seed only runs on a genuinely empty
 database, so a board you delete stays deleted across restarts.
+
+### Two kinds of board
+
+- **Forum** — you start threads, anyone replies anonymously.
+- **Wall** — no threads at all. Anyone can post a short note straight onto one
+  continuous stream, newest first, without a login. Good for an anonymous
+  suggestion box, a shout-out wall, or a place for people to leave something
+  kind without attaching their name to it.
+
+Pick the kind when you create a board at `/manage`. A wall is capped at 1,000
+characters per note and is rate-limited exactly like replies, so it cannot be
+turned into a spam firehose. You can delete any individual note.
 
 Locking a board stops new threads and new replies but leaves everything
 readable. Deleting one hides it and its threads; nothing is erased from disk,
@@ -53,6 +66,7 @@ Two kinds of visitor:
 |---|---|---|
 | Read any board | yes | yes |
 | Reply to a thread | yes, no login | yes |
+| Post a note on a wall | yes, no login | yes |
 | Start a thread | no | yes |
 | Pin / lock / delete threads | no | yes |
 | Create and manage boards | no | yes |
@@ -144,7 +158,8 @@ Routes:
 
 ```
 /                       board index
-/b/<slug>               threads in one board
+/b/<slug>               a board: threads, or a wall's notes
+/b/<slug>/post          leave a note on a wall (anonymous)
 /threads/<id>           a thread and its replies
 /manage                 board management (owner only)
 /login                  owner login

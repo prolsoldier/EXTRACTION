@@ -53,7 +53,11 @@ export function renderBoardIndex({ title, tagline, isAdmin, boards, notice }) {
   ${b.description ? `<p class="board-desc">${escapeHtml(b.description)}</p>` : ''}
   <div class="meta">
     ${b.locked ? '<span class="badge locked">locked</span>' : ''}
-    <span>${b.thread_count} ${b.thread_count === 1 ? 'thread' : 'threads'}</span>
+    <span>${
+      b.kind === 'wall'
+        ? `${b.message_count} ${b.message_count === 1 ? 'note' : 'notes'}`
+        : `${b.thread_count} ${b.thread_count === 1 ? 'thread' : 'threads'}`
+    }</span>
     ${b.last_active ? `<span>&middot;</span><span>active ${escapeHtml(timeAgo(b.last_active))}</span>` : ''}
   </div>
 </li>`,
@@ -124,6 +128,61 @@ ${newThreadForm}
   ${board.description ? `<p class="board-desc">${escapeHtml(board.description)}</p>` : ''}
   ${board.locked ? '<p class="locked-note">This board is locked. No new threads or replies.</p>' : ''}
   <ul class="threads">${list}</ul>
+</section>`,
+  });
+}
+
+/**
+ * A wall board: one continuous stream of anonymous notes, newest first.
+ * Unlike a forum board, anyone can post here without being the owner — that
+ * is the whole point of it.
+ */
+export function renderWall({ title, tagline, isAdmin, board, boards, messages, notice }) {
+  const form = board.locked
+    ? '<p class="locked-note">This wall is closed. No new notes.</p>'
+    : `<form method="post" action="/b/${escapeHtml(board.slug)}/post">
+  <label>Leave a note <span class="hint">anonymous, and it stays anonymous</span>
+    <textarea name="body" rows="4" maxlength="1000" required placeholder="Say something kind."></textarea>
+  </label>
+  <input type="text" name="website" class="honeypot" tabindex="-1" autocomplete="off" aria-hidden="true">
+  <button type="submit">Post it</button>
+</form>`;
+
+  const notes = messages.length
+    ? messages
+        .map((m) => {
+          if (m.deleted) return '';
+          const del = isAdmin
+            ? `<form class="inline" method="post" action="/messages/${m.id}/delete">
+                 <button class="danger linkish" type="submit">delete</button>
+               </form>`
+            : '';
+          return `<li class="note">
+  <div class="post-body">${renderBody(m.body)}</div>
+  <div class="post-meta">
+    <span>${escapeHtml(timeAgo(m.created_at))}</span>
+    ${del}
+  </div>
+</li>`;
+        })
+        .join('')
+    : '<li class="empty">No notes yet.</li>';
+
+  return layout({
+    title: `${board.name} — ${title}`,
+    tagline,
+    isAdmin,
+    boards,
+    activeSlug: board.slug,
+    notice,
+    body: `<p class="breadcrumb"><a href="/">&larr; all boards</a></p>
+<section class="card compose">
+  <h2>${escapeHtml(board.name)}</h2>
+  ${board.description ? `<p class="board-desc">${escapeHtml(board.description)}</p>` : ''}
+  ${form}
+</section>
+<section class="card">
+  <ul class="notes">${notes}</ul>
 </section>`,
   });
 }
@@ -221,7 +280,7 @@ export function renderManage({ title, tagline, boards, notice }) {
       <input type="text" name="description" value="${escapeHtml(b.description)}" maxlength="200">
     </label>
     <div class="admin-bar">
-      <span class="slug">/b/${escapeHtml(b.slug)}</span>
+      <span class="slug">/b/${escapeHtml(b.slug)} &middot; ${escapeHtml(b.kind)}</span>
       <button type="submit">save</button>
     </div>
   </form>
@@ -255,6 +314,12 @@ export function renderManage({ title, tagline, boards, notice }) {
     </label>
     <label>Slug <span class="hint">optional, derived from the name if left blank</span>
       <input type="text" name="slug" maxlength="32" autocomplete="off">
+    </label>
+    <label>Kind
+      <select name="kind">
+        <option value="forum">Forum — owner starts threads, anyone replies</option>
+        <option value="wall">Wall — anyone posts a note, no threads</option>
+      </select>
     </label>
     <button type="submit">Create board</button>
   </form>

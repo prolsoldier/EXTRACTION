@@ -41,6 +41,45 @@ function findBoardId(html, name) {
   return null;
 }
 
+/**
+ * Run a test against a private server instance. Rate-limit tests must not
+ * spend quota belonging to the shared fixture.
+ */
+async function withIsolatedApp(config, fn) {
+  const { server: isolated } = createApp({
+    adminToken: ADMIN_TOKEN,
+    secretKey: SECRET_KEY,
+    dbPath: ':memory:',
+    seedBoards: [{ slug: 'general', name: 'General', description: '', position: 1 }],
+    ...config,
+  });
+  await new Promise((resolve) => isolated.listen(0, '127.0.0.1', resolve));
+  const isolatedBase = `http://127.0.0.1:${isolated.address().port}`;
+
+  const call = async (pathname, { method = 'GET', form, cookie } = {}) => {
+    const headers = {};
+    if (cookie) headers.Cookie = cookie;
+    let body;
+    if (form) {
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      body = new URLSearchParams(form).toString();
+    }
+    const res = await fetch(`${isolatedBase}${pathname}`, {
+      method,
+      headers,
+      body,
+      redirect: 'manual',
+    });
+    return { res, text: await res.text() };
+  };
+
+  try {
+    await fn(call);
+  } finally {
+    isolated.close();
+  }
+}
+
 let ownerCookie = null;
 
 /**
@@ -62,7 +101,7 @@ before(async () => {
     secretKey: SECRET_KEY,
     dbPath: ':memory:',
     boardTitle: 'Test Board',
-    postsPerMinute: 3,
+    postsPerMinute: 100,
     seedBoards: [
       { slug: 'organizing', name: 'Organizing', description: 'Tactics and wins.', position: 1 },
       { slug: 'general', name: 'General', description: 'Everything else.', position: 2 },
@@ -256,18 +295,47 @@ describe('moderation', () => {
 
 describe('rate limiting', () => {
   test('cuts off a flood of anonymous posts', async () => {
-    const cookie = await loginAsOwner();
-    const thread = await createThread(cookie, 'flood');
+    await withIsolatedApp({ postsPerMinute: 3 }, async (call) => {
+      const login = await call('/login', { method: 'POST', form: { token: ADMIN_TOKEN } });
+      const cookie = login.res.headers.get('set-cookie').split(';')[0];
 
-    const statuses = [];
-    for (let i = 0; i < 8; i++) {
-      const { res } = await req(`${thread}/messages`, {
+      const made = await call('/b/general/threads', {
         method: 'POST',
-        form: { body: `spam ${i}` },
+        form: { title: 'flood' },
+        cookie,
       });
-      statuses.push(res.status);
-    }
-    assert.ok(statuses.includes(429), `expected a 429 in ${statuses.join(',')}`);
+      const thread = made.res.headers.get('location');
+
+      const statuses = [];
+      for (let i = 0; i < 8; i++) {
+        const { res } = await call(`${thread}/messages`, {
+          method: 'POST',
+          form: { body: `spam ${i}` },
+        });
+        statuses.push(res.status);
+      }
+      assert.ok(statuses.includes(429), `expected a 429 in ${statuses.join(',')}`);
+    });
+  });
+
+  test('cuts off a flood of wall notes', async () => {
+    await withIsolatedApp(
+      {
+        postsPerMinute: 3,
+        seedBoards: [{ slug: 'wall', name: 'Wall', description: '', kind: 'wall', position: 1 }],
+      },
+      async (call) => {
+        const statuses = [];
+        for (let i = 0; i < 8; i++) {
+          const { res } = await call('/b/wall/post', {
+            method: 'POST',
+            form: { body: `spam ${i}` },
+          });
+          statuses.push(res.status);
+        }
+        assert.ok(statuses.includes(429), `expected a 429 in ${statuses.join(',')}`);
+      },
+    );
   });
 });
 
@@ -374,34 +442,91 @@ describe('board management', () => {
   });
 });
 
+describe('wall boards', () => {
+  test('anyone can post a note to a wall without logging in', async () => {
+    const cookie = await loginAsOwner();
+    const { res: created } = await req('/manage', {
+      method: 'POST',
+      form: { name: 'Kind Words', description: 'Leave a note.', kind: 'wall' },
+      cookie,
+    });
+    assert.equal(created.status, 303);
+    assert.equal(created.headers.get('location'), '/b/kind-words');
+
+    // No cookie: a stranger.
+    const { res } = await req('/b/kind-words/post', {
+      method: 'POST',
+      form: { body: 'you held that meeting together when nobody else would' },
+    });
+    assert.equal(res.status, 303);
+
+    const { text } = await req('/b/kind-words');
+    assert.match(text, /held that meeting together/);
+    assert.match(text, /Leave a note/);
+  });
+
+  test('a wall escapes injected markup like everywhere else', async () => {
+    await req('/b/kind-words/post', {
+      method: 'POST',
+      form: { body: '<script>alert("wall")</script>' },
+    });
+    const { text } = await req('/b/kind-words');
+    assert.doesNotMatch(text, /<script>alert\("wall"\)/);
+    assert.match(text, /&lt;script&gt;/);
+  });
+
+  test('a wall rejects an empty note', async () => {
+    const { res } = await req('/b/kind-words/post', { method: 'POST', form: { body: '  ' } });
+    assert.equal(res.status, 400);
+  });
+
+  test('a wall honours the honeypot', async () => {
+    const { res } = await req('/b/kind-words/post', {
+      method: 'POST',
+      form: { body: 'buy followers now', website: 'http://spam.example' },
+    });
+    assert.equal(res.status, 303);
+    const { text } = await req('/b/kind-words');
+    assert.doesNotMatch(text, /buy followers/);
+  });
+
+  test('a wall takes no threads, and a forum takes no notes', async () => {
+    const cookie = await loginAsOwner();
+    const toWall = await req('/b/kind-words/threads', {
+      method: 'POST',
+      form: { title: 'nope' },
+      cookie,
+    });
+    assert.equal(toWall.res.status, 404);
+
+    const toForum = await req('/b/general/post', { method: 'POST', form: { body: 'nope' } });
+    assert.equal(toForum.res.status, 404);
+  });
+
+  test('the owner can delete a note from a wall', async () => {
+    const cookie = await loginAsOwner();
+    await req('/b/kind-words/post', { method: 'POST', form: { body: 'delete this note' } });
+
+    const { text: before } = await req('/b/kind-words', { cookie });
+    const id = before.match(/action="\/messages\/(\d+)\/delete"/)?.[1];
+    assert.ok(id, 'expected a delete control for the owner');
+
+    await req(`/messages/${id}/delete`, { method: 'POST', cookie });
+    const { text: after } = await req('/b/kind-words');
+    assert.doesNotMatch(after, /delete this note/);
+  });
+});
+
 describe('login throttling', () => {
   test('cuts off repeated wrong-token attempts', async () => {
-    const { server: isolated } = createApp({
-      adminToken: ADMIN_TOKEN,
-      secretKey: SECRET_KEY,
-      dbPath: ':memory:',
-      loginsPerHour: 3,
-      seedBoards: [],
-    });
-    await new Promise((resolve) => isolated.listen(0, '127.0.0.1', resolve));
-    const isolatedBase = `http://127.0.0.1:${isolated.address().port}`;
-
-    try {
+    await withIsolatedApp({ loginsPerHour: 3 }, async (call) => {
       const statuses = [];
       for (let i = 0; i < 6; i++) {
-        const res = await fetch(`${isolatedBase}/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ token: 'guessing' }).toString(),
-          redirect: 'manual',
-        });
+        const { res } = await call('/login', { method: 'POST', form: { token: 'guessing' } });
         statuses.push(res.status);
-        await res.text();
       }
       assert.ok(statuses.includes(429), `expected a 429 in ${statuses.join(',')}`);
-    } finally {
-      isolated.close();
-    }
+    });
   });
 });
 
