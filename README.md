@@ -18,7 +18,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # -> 
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # -> SECRET_KEY
 
 npm start          # http://127.0.0.1:3000
-npm test           # 35 tests, no network needed
+npm test           # 45 tests, no network needed
 npm run dev        # auto-restart on change
 ```
 
@@ -58,6 +58,43 @@ Locking a board stops new threads and new replies but leaves everything
 readable. Deleting one hides it and its threads; nothing is erased from disk,
 so a deletion made in anger is recoverable with a SQL update.
 
+## Moderation
+
+The owner controls everything on the board, and has three tools for it.
+
+**Reports.** Anyone can report any post, with an optional reason. Reporting
+needs no login and is itself anonymous — the `reports` table stores the message,
+the reason and the time, and nothing that identifies who filed it. A second
+report on an already-open one is accepted silently rather than stacking
+duplicates. Reports are rate-limited like posts, so the queue cannot be flooded.
+
+**Pre-moderation.** Any board can be set to hold every post until the owner
+approves it. Held posts are invisible to the public, do not count toward the
+reply count, and cannot bump a thread — so the queue can't be used to push a
+thread up the board before anyone has read it. The owner sees them in place,
+marked, and never has to wait behind their own queue.
+
+**The queue.** `/moderate` shows everything waiting on a decision — held posts
+and open reports — with approve, remove and dismiss on each. The header carries
+a live count.
+
+### Why there is no ban button
+
+Poster tokens rotate daily by design (see **Anonymity**), so a ban keyed on one
+would expire within a day and could be walked around immediately. Rather than
+ship a control that looks like it works and doesn't, the board offers
+pre-moderation, which actually holds. This is a real trade: the board cannot
+durably exclude a specific person, and in exchange it cannot build a profile of
+anyone either.
+
+## Rules
+
+`/rules` is public and linked from every page. The default text is deliberately
+concrete — it names harassment, outing, speculation about people's bodies, and
+bigotry as removable, because a board that only says "be respectful" tells a
+reader nothing about whether their particular problem will be taken seriously.
+Override it with `BOARD_RULES`.
+
 ## How it works
 
 Two kinds of visitor:
@@ -67,7 +104,9 @@ Two kinds of visitor:
 | Read any board | yes | yes |
 | Reply to a thread | yes, no login | yes |
 | Post a note on a wall | yes, no login | yes |
+| Report a post | yes, no login | yes |
 | Start a thread | no | yes |
+| Approve, remove, dismiss | no | yes |
 | Pin / lock / delete threads | no | yes |
 | Create and manage boards | no | yes |
 
@@ -87,6 +126,8 @@ software makes and few honour.
   Wednesday — not even by whoever holds the database *and* the secret key.
 - **The hash exists only to rate-limit**, and those rows are pruned every ten
   minutes so the limiter table never accumulates into a usage history.
+- **Reports carry no reporter.** A report records what was reported and why,
+  and nothing about who filed it — not a name, not a session, not a hash.
 - **No cookies for readers or posters.** The only cookie in the system is the
   owner's session, and it is `HttpOnly; SameSite=Strict`.
 - **No third-party requests.** No fonts, no CDN, no scripts. The CSP is
@@ -139,6 +180,7 @@ All via `.env` (see `.env.example`):
 | `BOARD_TITLE` / `BOARD_TAGLINE` | no | Header text. |
 | `DB_PATH` | no | Default `./data/board.db`. |
 | `TRUST_PROXY` | no | `1` only behind a proxy you control. |
+| `BOARD_RULES` | no | Replaces the default house rules at `/rules`. |
 
 Changing `SECRET_KEY` logs out the owner and resets rate limits. Nothing else
 is affected.
@@ -160,6 +202,8 @@ Routes:
 /                       board index
 /b/<slug>               a board: threads, or a wall's notes
 /b/<slug>/post          leave a note on a wall (anonymous)
+/rules                  house rules, public
+/moderate               approval queue and reports (owner only)
 /threads/<id>           a thread and its replies
 /manage                 board management (owner only)
 /login                  owner login

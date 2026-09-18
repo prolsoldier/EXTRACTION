@@ -517,6 +517,224 @@ describe('wall boards', () => {
   });
 });
 
+describe('rules page', () => {
+  test('is public and states the protections concretely', async () => {
+    const { res, text } = await req('/rules');
+    assert.equal(res.status, 200);
+    assert.match(text, /Trans people/);
+    assert.match(text, /Do not harass anyone/);
+    assert.match(text, /Reporting is anonymous/);
+  });
+});
+
+describe('reporting', () => {
+  test('anyone can report a post without logging in', async () => {
+    const cookie = await loginAsOwner();
+    const thread = await createThread(cookie, 'reportable');
+    const { res: posted } = await req(`${thread}/messages`, {
+      method: 'POST',
+      form: { body: 'something worth reporting' },
+    });
+    const messageId = posted.headers.get('location').split('#m')[1];
+
+    // No cookie: a stranger.
+    const { res } = await req(`/messages/${messageId}/report`, {
+      method: 'POST',
+      form: { reason: 'harassment' },
+    });
+    assert.equal(res.status, 303);
+
+    const { text } = await req('/moderate', { cookie });
+    assert.match(text, /harassment/);
+    assert.match(text, /something worth reporting/);
+  });
+
+  test('a repeat report does not stack duplicates in the queue', async () => {
+    const cookie = await loginAsOwner();
+    const thread = await createThread(cookie, 'double-reported');
+    const { res: posted } = await req(`${thread}/messages`, {
+      method: 'POST',
+      form: { body: 'reported twice over' },
+    });
+    const messageId = posted.headers.get('location').split('#m')[1];
+
+    await req(`/messages/${messageId}/report`, { method: 'POST', form: { reason: 'first' } });
+    await req(`/messages/${messageId}/report`, { method: 'POST', form: { reason: 'second' } });
+
+    const { text } = await req('/moderate', { cookie });
+    assert.match(text, /first/);
+    assert.doesNotMatch(text, /second/);
+  });
+
+  test('a report escapes injected markup in its reason', async () => {
+    const cookie = await loginAsOwner();
+    const thread = await createThread(cookie, 'nasty-reason');
+    const { res: posted } = await req(`${thread}/messages`, {
+      method: 'POST',
+      form: { body: 'ordinary post' },
+    });
+    const messageId = posted.headers.get('location').split('#m')[1];
+
+    await req(`/messages/${messageId}/report`, {
+      method: 'POST',
+      form: { reason: '<script>alert("report")</script>' },
+    });
+
+    const { text } = await req('/moderate', { cookie });
+    assert.doesNotMatch(text, /<script>alert\("report"\)/);
+    assert.match(text, /&lt;script&gt;/);
+  });
+
+  test('the honeypot silently drops a bot report', async () => {
+    const cookie = await loginAsOwner();
+    const thread = await createThread(cookie, 'bot-reported');
+    const { res: posted } = await req(`${thread}/messages`, {
+      method: 'POST',
+      form: { body: 'target post' },
+    });
+    const messageId = posted.headers.get('location').split('#m')[1];
+
+    const { res } = await req(`/messages/${messageId}/report`, {
+      method: 'POST',
+      form: { reason: 'spam-bot-reason', website: 'http://spam.example' },
+    });
+    assert.equal(res.status, 303);
+
+    const { text } = await req('/moderate', { cookie });
+    assert.doesNotMatch(text, /spam-bot-reason/);
+  });
+
+  test('anonymous visitors cannot reach the moderation queue or act on it', async () => {
+    const view = await req('/moderate');
+    assert.equal(view.res.status, 403);
+
+    const approve = await req('/messages/1/approve', { method: 'POST' });
+    assert.equal(approve.res.status, 403);
+
+    const dismiss = await req('/reports/1/dismiss', { method: 'POST' });
+    assert.equal(dismiss.res.status, 403);
+  });
+
+  test('the owner can dismiss a report, clearing it from the queue', async () => {
+    const cookie = await loginAsOwner();
+    const thread = await createThread(cookie, 'dismissable');
+    const { res: posted } = await req(`${thread}/messages`, {
+      method: 'POST',
+      form: { body: 'fine actually' },
+    });
+    const messageId = posted.headers.get('location').split('#m')[1];
+    await req(`/messages/${messageId}/report`, {
+      method: 'POST',
+      form: { reason: 'unique-dismiss-reason' },
+    });
+
+    const { text: queue } = await req('/moderate', { cookie });
+    const reportId = queue.match(/action="\/reports\/(\d+)\/dismiss"/)?.[1];
+    assert.ok(reportId, 'expected a dismiss control');
+
+    await req(`/reports/${reportId}/dismiss`, { method: 'POST', cookie });
+    const { text: after } = await req('/moderate', { cookie });
+    assert.doesNotMatch(after, /unique-dismiss-reason/);
+  });
+});
+
+describe('pre-moderation', () => {
+  test('a held post is invisible publicly, visible to the owner, and approvable', async () => {
+    await withIsolatedApp(
+      { seedBoards: [{ slug: 'held', name: 'Held', description: '', position: 1 }] },
+      async (call) => {
+        const login = await call('/login', { method: 'POST', form: { token: ADMIN_TOKEN } });
+        const cookie = login.res.headers.get('set-cookie').split(';')[0];
+
+        // Turn on holding for the board.
+        const { text: manage } = await call('/manage', { cookie });
+        const id = manage.match(/action="\/manage\/(\d+)\/premoderate"/)?.[1];
+        assert.ok(id, 'expected a pre-moderation control');
+        await call(`/manage/${id}/premoderate`, { method: 'POST', cookie });
+
+        const made = await call('/b/held/threads', {
+          method: 'POST',
+          form: { title: 'queue test' },
+          cookie,
+        });
+        const thread = made.res.headers.get('location');
+
+        const { res } = await call(`${thread}/messages`, {
+          method: 'POST',
+          form: { body: 'awaiting a decision' },
+        });
+        assert.equal(res.status, 303);
+
+        const anon = await call(thread);
+        assert.doesNotMatch(anon.text, /awaiting a decision/);
+
+        const owner = await call(thread, { cookie });
+        assert.match(owner.text, /awaiting a decision/);
+        assert.match(owner.text, /held for review/);
+
+        const queue = await call('/moderate', { cookie });
+        assert.match(queue.text, /awaiting a decision/);
+        const messageId = queue.text.match(/action="\/messages\/(\d+)\/approve"/)?.[1];
+        assert.ok(messageId, 'expected an approve control');
+
+        await call(`/messages/${messageId}/approve`, { method: 'POST', cookie });
+        const nowPublic = await call(thread);
+        assert.match(nowPublic.text, /awaiting a decision/);
+      },
+    );
+  });
+
+  test('the owner is never held behind their own queue', async () => {
+    await withIsolatedApp(
+      { seedBoards: [{ slug: 'held2', name: 'Held2', description: '', position: 1 }] },
+      async (call) => {
+        const login = await call('/login', { method: 'POST', form: { token: ADMIN_TOKEN } });
+        const cookie = login.res.headers.get('set-cookie').split(';')[0];
+
+        const { text: manage } = await call('/manage', { cookie });
+        const id = manage.match(/action="\/manage\/(\d+)\/premoderate"/)?.[1];
+        await call(`/manage/${id}/premoderate`, { method: 'POST', cookie });
+
+        const made = await call('/b/held2/threads', {
+          method: 'POST',
+          form: { title: 'owner posts' },
+          cookie,
+        });
+        const thread = made.res.headers.get('location');
+
+        await call(`${thread}/messages`, { method: 'POST', form: { body: 'owner speaks' }, cookie });
+        const anon = await call(thread);
+        assert.match(anon.text, /owner speaks/);
+      },
+    );
+  });
+
+  test('a held post does not inflate the public reply count', async () => {
+    await withIsolatedApp(
+      { seedBoards: [{ slug: 'held3', name: 'Held3', description: '', position: 1 }] },
+      async (call) => {
+        const login = await call('/login', { method: 'POST', form: { token: ADMIN_TOKEN } });
+        const cookie = login.res.headers.get('set-cookie').split(';')[0];
+
+        const { text: manage } = await call('/manage', { cookie });
+        const id = manage.match(/action="\/manage\/(\d+)\/premoderate"/)?.[1];
+        await call(`/manage/${id}/premoderate`, { method: 'POST', cookie });
+
+        const made = await call('/b/held3/threads', {
+          method: 'POST',
+          form: { title: 'counting' },
+          cookie,
+        });
+        const thread = made.res.headers.get('location');
+        await call(`${thread}/messages`, { method: 'POST', form: { body: 'not yet visible' } });
+
+        const { text } = await call('/b/held3');
+        assert.match(text, /0 replies/);
+      },
+    );
+  });
+});
+
 describe('login throttling', () => {
   test('cuts off repeated wrong-token attempts', async () => {
     await withIsolatedApp({ loginsPerHour: 3 }, async (call) => {

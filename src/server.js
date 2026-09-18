@@ -9,6 +9,8 @@ import {
   renderBoardIndex,
   renderBoard,
   renderWall,
+  renderModerate,
+  renderRules,
   renderThread,
   renderManage,
   renderLogin,
@@ -31,6 +33,22 @@ const MAX_TITLE_LENGTH = 200;
 const MAX_BOARD_NAME_LENGTH = 60;
 const MAX_BOARD_DESC_LENGTH = 200;
 const MAX_NOTE_LENGTH = 1000;
+const MAX_REASON_LENGTH = 200;
+
+/**
+ * Default house rules. Deliberately concrete: a board that only says "be
+ * respectful" tells a reader nothing about whether their particular problem
+ * will be taken seriously. Override with BOARD_RULES.
+ */
+const DEFAULT_RULES = [
+  'This board is open to everyone. Trans people, nonbinary people, femboys, and anyone else who catches grief elsewhere are welcome here as participants, not as scenery.',
+  'Do not harass anyone. That includes sexual comments aimed at someone who did not ask for them, pressure after a no, following someone from thread to thread, and "jokes" that only work because of who the person is.',
+  'Do not out anyone, speculate about anyone\u2019s body or medical history, or dig for someone\u2019s legal name, workplace, or address. This board is anonymous on purpose. Do not try to undo that for someone else.',
+  'Bigotry gets removed, not debated. That covers transphobia, homophobia, racism, and antisemitism, whether it arrives as an argument or as a joke.',
+  'Nothing sexual involving minors, ever. This is not a warning, it is a permanent removal and the end of the conversation.',
+  'Report anything that breaks these rules. Reporting is anonymous and nothing records who reported what. The owner reviews every report.',
+  'The owner has the final say and can remove anything. If that is not a trade you want to make, do not post here.',
+].join('\n\n');
 
 /**
  * Seeded only when the boards table is empty. Everything here is editable and
@@ -94,6 +112,7 @@ export function createApp(config) {
     postsPerMinute = 5,
     loginsPerHour = 10,
     seedBoards = DEFAULT_BOARDS,
+    rules = DEFAULT_RULES,
   } = config;
 
   if (!adminToken) throw new Error('ADMIN_TOKEN is required');
@@ -160,11 +179,13 @@ export function createApp(config) {
 
       // ---- boards ---------------------------------------------------
       const boards = board.listBoards();
+      const queueCount = isAdmin ? board.countPending() + board.countOpenReports() : 0;
 
       if (req.method === 'GET' && pathname === '/') {
         return send(
           200,
           renderBoardIndex({
+            queueCount,
             title: boardTitle,
             tagline: boardTagline,
             isAdmin,
@@ -181,10 +202,13 @@ export function createApp(config) {
 
         if (current.kind === 'wall') {
           const wall = board.getWallThread(current.id);
-          const notes = wall ? board.listMessages(wall.id).reverse() : [];
+          const notes = wall
+            ? board.listMessages(wall.id, { includePending: isAdmin }).reverse()
+            : [];
           return send(
             200,
             renderWall({
+              queueCount,
               title: boardTitle,
               tagline: boardTagline,
               isAdmin,
@@ -199,6 +223,7 @@ export function createApp(config) {
         return send(
           200,
           renderBoard({
+            queueCount,
             title: boardTitle,
             tagline: boardTagline,
             isAdmin,
@@ -217,16 +242,95 @@ export function createApp(config) {
         return send(
           200,
           renderThread({
+            queueCount,
             title: boardTitle,
             tagline: boardTagline,
             isAdmin,
             board: thread.board_id ? board.getBoard(thread.board_id) : null,
             boards,
             thread,
-            messages: board.listMessages(thread.id),
+            messages: board.listMessages(thread.id, { includePending: isAdmin }),
             notice,
           }),
         );
+      }
+
+      if (req.method === 'GET' && pathname === '/rules') {
+        return send(
+          200,
+          renderRules({
+            queueCount,
+            title: boardTitle,
+            tagline: boardTagline,
+            isAdmin,
+            boards,
+            rules,
+          }),
+        );
+      }
+
+      // ---- reports and moderation ------------------------------------
+      const reportMatch = pathname.match(/^\/messages\/(\d+)\/report$/);
+      if (req.method === 'POST' && reportMatch) {
+        const message = board.getMessage(Number(reportMatch[1]));
+        if (!message) return fail(404, 'That message does not exist.');
+
+        const form = await readBody(req);
+        if (form.website) return redirect(`/threads/${message.thread_id}`); // honeypot
+
+        // Reports are rate-limited like posts, so the queue cannot be flooded.
+        const token = posterToken(clientIp(req, trustProxy), secretKey);
+        if (!board.checkRateLimit(`report:${token}`, { limit: postsPerMinute, windowMs: 60_000 })) {
+          return fail(429, 'You are reporting too quickly. Wait a minute and try again.');
+        }
+
+        // Deliberately idempotent-ish: a second report on an already-open one
+        // is accepted silently rather than stacking duplicates in the queue.
+        if (!board.hasOpenReport(message.id)) {
+          const reason = String(form.reason ?? '').trim().slice(0, MAX_REASON_LENGTH);
+          board.createReport({ messageId: message.id, reason });
+        }
+
+        const thread = board.getThread(message.thread_id);
+        const back =
+          thread && thread.board_slug && thread.board_kind === 'wall'
+            ? `/b/${thread.board_slug}`
+            : `/threads/${message.thread_id}`;
+        return redirect(`${back}?notice=Reported.+The+owner+will+review+it.`);
+      }
+
+      if (req.method === 'GET' && pathname === '/moderate') {
+        if (!requireAdmin()) return;
+        return send(
+          200,
+          renderModerate({
+            queueCount,
+            title: boardTitle,
+            tagline: boardTagline,
+            boards,
+            pending: board.listPending(),
+            reports: board.listReports(),
+            notice,
+          }),
+        );
+      }
+
+      const approveMatch = pathname.match(/^\/messages\/(\d+)\/approve$/);
+      if (req.method === 'POST' && approveMatch) {
+        if (!requireAdmin()) return;
+        const message = board.getMessage(Number(approveMatch[1]));
+        if (!message) return fail(404, 'That message does not exist.');
+        board.approveMessage(message.id);
+        return redirect('/moderate?notice=Approved.');
+      }
+
+      const dismissMatch = pathname.match(/^\/reports\/(\d+)\/dismiss$/);
+      if (req.method === 'POST' && dismissMatch) {
+        if (!requireAdmin()) return;
+        const report = board.getReport(Number(dismissMatch[1]));
+        if (!report) return fail(404, 'That report does not exist.');
+        board.resolveReport(report.id);
+        return redirect('/moderate?notice=Report+dismissed.');
       }
 
       // ---- auth -----------------------------------------------------
@@ -285,8 +389,13 @@ export function createApp(config) {
 
         const wall = board.getWallThread(current.id);
         if (!wall) return fail(500, 'That wall is missing its backing thread.');
-        board.addMessage({ threadId: wall.id, body, isOwner: isAdmin });
-        return redirect(`/b/${current.slug}?notice=Posted.`);
+
+        // The owner's own posts are never held behind their own queue.
+        const approved = isAdmin || !current.premoderated;
+        board.addMessage({ threadId: wall.id, body, isOwner: isAdmin, approved });
+        return redirect(
+          `/b/${current.slug}?notice=${approved ? 'Posted.' : 'Sent+for+review.+It+appears+once+the+owner+approves+it.'}`,
+        );
       }
 
       const newThreadMatch = pathname.match(/^\/b\/([a-z0-9-]{1,32})\/threads$/);
@@ -329,8 +438,14 @@ export function createApp(config) {
           }
         }
 
-        const id = board.addMessage({ threadId: thread.id, body, isOwner: isAdmin });
-        return redirect(`/threads/${thread.id}#m${id}`);
+        const holding = thread.board_id ? board.getBoard(thread.board_id)?.premoderated : 0;
+        const approved = isAdmin || !holding;
+        const id = board.addMessage({ threadId: thread.id, body, isOwner: isAdmin, approved });
+        return redirect(
+          approved
+            ? `/threads/${thread.id}#m${id}`
+            : `/threads/${thread.id}?notice=Sent+for+review.+It+appears+once+the+owner+approves+it.`,
+        );
       }
 
       // ---- board management (owner only) -----------------------------
@@ -338,7 +453,7 @@ export function createApp(config) {
         if (!requireAdmin()) return;
         return send(
           200,
-          renderManage({ title: boardTitle, tagline: boardTagline, boards, notice }),
+          renderManage({ queueCount, title: boardTitle, tagline: boardTagline, boards, notice }),
         );
       }
 
@@ -356,12 +471,13 @@ export function createApp(config) {
         if (board.getBoardBySlug(slug)) return fail(409, `A board at /b/${slug} already exists.`);
 
         const kind = form.kind === 'wall' ? 'wall' : 'forum';
+        const premoderated = form.premoderated === '1';
         const position = boards.length ? Math.max(...boards.map((b) => b.position)) + 1 : 1;
-        board.createBoard({ slug, name, description, kind, position });
+        board.createBoard({ slug, name, description, kind, premoderated, position });
         return redirect(`/b/${slug}`);
       }
 
-      const manageMatch = pathname.match(/^\/manage\/(\d+)(?:\/(lock|delete))?$/);
+      const manageMatch = pathname.match(/^\/manage\/(\d+)(?:\/(lock|delete|premoderate))?$/);
       if (req.method === 'POST' && manageMatch) {
         if (!requireAdmin()) return;
         const [, rawId, action] = manageMatch;
@@ -374,6 +490,10 @@ export function createApp(config) {
         }
         if (action === 'lock') {
           board.setBoardFlag(current.id, 'locked', current.locked ? 0 : 1);
+          return redirect('/manage');
+        }
+        if (action === 'premoderate') {
+          board.setBoardFlag(current.id, 'premoderated', current.premoderated ? 0 : 1);
           return redirect('/manage');
         }
 
@@ -415,7 +535,17 @@ export function createApp(config) {
         const message = board.getMessage(Number(deleteMatch[1]));
         if (!message) return fail(404, 'That message does not exist.');
         board.deleteMessage(message.id);
-        return redirect(`/threads/${message.thread_id}`);
+        board.resolveReportsForMessage(message.id);
+
+        const from = req.headers.referer ?? '';
+        if (from.endsWith('/moderate')) return redirect('/moderate?notice=Removed.');
+
+        const thread = board.getThread(message.thread_id);
+        const back =
+          thread && thread.board_slug && thread.board_kind === 'wall'
+            ? `/b/${thread.board_slug}`
+            : `/threads/${message.thread_id}`;
+        return redirect(back);
       }
 
       return fail(404, 'No such page.');

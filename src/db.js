@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS boards (
   name        TEXT    NOT NULL,
   description TEXT    NOT NULL DEFAULT '',
   kind        TEXT    NOT NULL DEFAULT 'forum',
+  premoderated INTEGER NOT NULL DEFAULT 0,
   position    INTEGER NOT NULL DEFAULT 0,
   locked      INTEGER NOT NULL DEFAULT 0,
   deleted     INTEGER NOT NULL DEFAULT 0
@@ -32,7 +33,18 @@ CREATE TABLE IF NOT EXISTS messages (
   body        TEXT    NOT NULL,
   created_at  INTEGER NOT NULL,
   is_owner    INTEGER NOT NULL DEFAULT 0,
+  approved    INTEGER NOT NULL DEFAULT 1,
   deleted     INTEGER NOT NULL DEFAULT 0
+);
+
+-- Anonymous reports. A reporter is never identified, not even by a hash:
+-- nothing here links a report back to whoever filed it.
+CREATE TABLE IF NOT EXISTS reports (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id  INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  reason      TEXT    NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  resolved    INTEGER NOT NULL DEFAULT 0
 );
 
 -- Rate limiting only. Holds a salted, daily-rotating hash, never an IP.
@@ -46,6 +58,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, id);
 CREATE INDEX IF NOT EXISTS idx_threads_bumped  ON threads(board_id, pinned DESC, bumped_at DESC);
 CREATE INDEX IF NOT EXISTS idx_boards_position ON boards(position, id);
+CREATE INDEX IF NOT EXISTS idx_reports_open    ON reports(resolved, id DESC);
 `;
 
 export function openDatabase(dbPath) {
@@ -68,6 +81,15 @@ function migrate(db) {
   const boardColumns = db.prepare('PRAGMA table_info(boards)').all().map((c) => c.name);
   if (!boardColumns.includes('kind')) {
     db.exec("ALTER TABLE boards ADD COLUMN kind TEXT NOT NULL DEFAULT 'forum'");
+  }
+  if (!boardColumns.includes('premoderated')) {
+    db.exec('ALTER TABLE boards ADD COLUMN premoderated INTEGER NOT NULL DEFAULT 0');
+  }
+
+  const messageColumns = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
+  if (!messageColumns.includes('approved')) {
+    // Existing messages were already visible, so they stay approved.
+    db.exec('ALTER TABLE messages ADD COLUMN approved INTEGER NOT NULL DEFAULT 1');
   }
 
   const columns = db.prepare('PRAGMA table_info(threads)').all().map((c) => c.name);
@@ -103,15 +125,23 @@ export class Board {
 
   // ---- boards --------------------------------------------------------
 
-  createBoard({ slug, name, description = '', kind = 'forum', position = 0, now = Date.now() }) {
+  createBoard({
+    slug,
+    name,
+    description = '',
+    kind = 'forum',
+    premoderated = false,
+    position = 0,
+    now = Date.now(),
+  }) {
     if (!['forum', 'wall'].includes(kind)) {
       throw new Error(`unknown board kind: ${kind}`);
     }
     const info = this.db
       .prepare(
-        'INSERT INTO boards (slug, name, description, kind, position) VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO boards (slug, name, description, kind, premoderated, position) VALUES (?, ?, ?, ?, ?, ?)',
       )
-      .run(slug, name, description, kind, position);
+      .run(slug, name, description, kind, premoderated ? 1 : 0, position);
     const boardId = Number(info.lastInsertRowid);
 
     // A wall is one continuous stream, so it carries a single backing thread
@@ -136,12 +166,12 @@ export class Board {
   listBoards() {
     return this.db
       .prepare(
-        `SELECT b.id, b.slug, b.name, b.description, b.kind, b.position, b.locked,
+        `SELECT b.id, b.slug, b.name, b.description, b.kind, b.premoderated, b.position, b.locked,
                 (SELECT COUNT(*) FROM threads t
                   WHERE t.board_id = b.id AND t.deleted = 0) AS thread_count,
                 (SELECT COUNT(*) FROM messages m
                    JOIN threads t ON t.id = m.thread_id
-                  WHERE t.board_id = b.id AND m.deleted = 0) AS message_count,
+                  WHERE t.board_id = b.id AND m.deleted = 0 AND m.approved = 1) AS message_count,
                 (SELECT MAX(t.bumped_at) FROM threads t
                   WHERE t.board_id = b.id AND t.deleted = 0) AS last_active
            FROM boards b
@@ -168,7 +198,7 @@ export class Board {
   }
 
   setBoardFlag(id, field, value) {
-    if (!['locked', 'deleted'].includes(field)) {
+    if (!['locked', 'deleted', 'premoderated'].includes(field)) {
       throw new Error(`refusing to update unknown column: ${field}`);
     }
     this.db.prepare(`UPDATE boards SET ${field} = ? WHERE id = ?`).run(value ? 1 : 0, id);
@@ -196,7 +226,7 @@ export class Board {
         `SELECT t.id, t.board_id, t.title, t.body, t.created_at, t.bumped_at,
                 t.pinned, t.locked,
                 (SELECT COUNT(*) FROM messages m
-                  WHERE m.thread_id = t.id AND m.deleted = 0) AS reply_count
+                  WHERE m.thread_id = t.id AND m.deleted = 0 AND m.approved = 1) AS reply_count
            FROM threads t
           WHERE t.deleted = 0 AND (? IS NULL OR t.board_id = ?)
           ORDER BY t.pinned DESC, t.bumped_at DESC
@@ -208,7 +238,8 @@ export class Board {
   getThread(id) {
     return this.db
       .prepare(
-        `SELECT t.*, b.slug AS board_slug, b.name AS board_name, b.locked AS board_locked
+        `SELECT t.*, b.slug AS board_slug, b.name AS board_name, b.locked AS board_locked,
+                b.kind AS board_kind, b.premoderated AS board_premoderated
            FROM threads t
            LEFT JOIN boards b ON b.id = t.board_id
           WHERE t.id = ? AND t.deleted = 0`,
@@ -227,25 +258,59 @@ export class Board {
 
   // ---- messages ------------------------------------------------------
 
-  addMessage({ threadId, body, isOwner = false, now = Date.now() }) {
+  addMessage({ threadId, body, isOwner = false, approved = true, now = Date.now() }) {
     const info = this.db
       .prepare(
-        'INSERT INTO messages (thread_id, body, created_at, is_owner) VALUES (?, ?, ?, ?)',
+        'INSERT INTO messages (thread_id, body, created_at, is_owner, approved) VALUES (?, ?, ?, ?, ?)',
       )
-      .run(threadId, body, now, isOwner ? 1 : 0);
-    this.db.prepare('UPDATE threads SET bumped_at = ? WHERE id = ?').run(now, threadId);
+      .run(threadId, body, now, isOwner ? 1 : 0, approved ? 1 : 0);
+    // Only a visible message bumps the thread, so a queue cannot be used to
+    // push a thread up the board before anyone has approved it.
+    if (approved) {
+      this.db.prepare('UPDATE threads SET bumped_at = ? WHERE id = ?').run(now, threadId);
+    }
     return Number(info.lastInsertRowid);
   }
 
-  listMessages(threadId) {
+  approveMessage(id, now = Date.now()) {
+    const message = this.getMessage(id);
+    if (!message) return;
+    this.db.prepare('UPDATE messages SET approved = 1 WHERE id = ?').run(id);
+    this.db.prepare('UPDATE threads SET bumped_at = ? WHERE id = ?').run(now, message.thread_id);
+  }
+
+  /** Messages held for approval, oldest first so the queue is fair. */
+  listPending({ limit = 100 } = {}) {
     return this.db
       .prepare(
-        `SELECT id, thread_id, body, created_at, is_owner, deleted
+        `SELECT m.id, m.body, m.created_at,
+                t.id AS thread_id, t.title AS thread_title,
+                b.slug AS board_slug, b.name AS board_name, b.kind AS board_kind
+           FROM messages m
+           JOIN threads t ON t.id = m.thread_id
+           LEFT JOIN boards b ON b.id = t.board_id
+          WHERE m.approved = 0 AND m.deleted = 0
+          ORDER BY m.id ASC
+          LIMIT ?`,
+      )
+      .all(limit);
+  }
+
+  countPending() {
+    return this.db
+      .prepare('SELECT COUNT(*) AS n FROM messages WHERE approved = 0 AND deleted = 0')
+      .get().n;
+  }
+
+  listMessages(threadId, { includePending = false } = {}) {
+    return this.db
+      .prepare(
+        `SELECT id, thread_id, body, created_at, is_owner, approved, deleted
            FROM messages
-          WHERE thread_id = ?
+          WHERE thread_id = ? AND (? = 1 OR approved = 1)
           ORDER BY id ASC`,
       )
-      .all(threadId);
+      .all(threadId, includePending ? 1 : 0);
   }
 
   deleteMessage(id) {
@@ -254,6 +319,62 @@ export class Board {
 
   getMessage(id) {
     return this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id);
+  }
+
+  // ---- reports -------------------------------------------------------
+
+  createReport({ messageId, reason = '', now = Date.now() }) {
+    const info = this.db
+      .prepare('INSERT INTO reports (message_id, reason, created_at) VALUES (?, ?, ?)')
+      .run(messageId, reason, now);
+    return Number(info.lastInsertRowid);
+  }
+
+  /** Open reports, newest first, with enough context to judge without digging. */
+  listReports({ resolved = 0, limit = 100 } = {}) {
+    return this.db
+      .prepare(
+        `SELECT r.id, r.reason, r.created_at, r.resolved,
+                m.id AS message_id, m.body, m.deleted AS message_deleted,
+                t.id AS thread_id, t.title AS thread_title,
+                b.slug AS board_slug, b.name AS board_name, b.kind AS board_kind
+           FROM reports r
+           JOIN messages m ON m.id = r.message_id
+           JOIN threads  t ON t.id = m.thread_id
+           LEFT JOIN boards b ON b.id = t.board_id
+          WHERE r.resolved = ?
+          ORDER BY r.id DESC
+          LIMIT ?`,
+      )
+      .all(resolved ? 1 : 0, limit);
+  }
+
+  countOpenReports() {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM reports WHERE resolved = 0').get().n;
+  }
+
+  resolveReport(id) {
+    this.db.prepare('UPDATE reports SET resolved = 1 WHERE id = ?').run(id);
+  }
+
+  /** Close every open report against a message, used when the owner acts on it. */
+  resolveReportsForMessage(messageId) {
+    this.db
+      .prepare('UPDATE reports SET resolved = 1 WHERE message_id = ? AND resolved = 0')
+      .run(messageId);
+  }
+
+  getReport(id) {
+    return this.db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+  }
+
+  /** True when this message already has an open report, to avoid pile-ups. */
+  hasOpenReport(messageId) {
+    return (
+      this.db
+        .prepare('SELECT COUNT(*) AS n FROM reports WHERE message_id = ? AND resolved = 0')
+        .get(messageId).n > 0
+    );
   }
 
   // ---- rate limiting -------------------------------------------------
@@ -294,6 +415,8 @@ export class Board {
     const messages = this.db
       .prepare('SELECT COUNT(*) AS n FROM messages WHERE deleted = 0')
       .get().n;
-    return { boards, threads, messages };
+    const openReports = this.countOpenReports();
+    const pending = this.countPending();
+    return { boards, threads, messages, openReports, pending };
   }
 }

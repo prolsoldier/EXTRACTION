@@ -306,3 +306,71 @@ select {
   border-radius: 8px;
 }
 select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---- reporting ---- */
+.report { display: inline-block; }
+.report summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.8rem;
+  list-style: none;
+  text-decoration: underline;
+}
+.report summary::-webkit-details-marker { display: none; }
+.report summary:hover { color: var(--accent); }
+.report form {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.report input[type="text"] { flex: 1 1 200px; margin-top: 0; }
+.report button { padding: 6px 14px; font-size: 0.82rem; }
+
+/* ---- held posts ---- */
+.badge.pending { color: var(--accentAmber, #d9a441); border-color: var(--owner); }
+.message.pending, .note.pending {
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+/* ---- moderation queue ---- */
+.queue { list-style: none; margin: 0; padding: 0; }
+.queue-item {
+  padding: 16px;
+  margin-bottom: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.queue-where {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.queue-where a { color: var(--muted); }
+.queue-where a:hover { color: var(--accent); }
+.report-reason {
+  margin: 0 0 10px;
+  padding-left: 12px;
+  border-left: 2px solid var(--owner);
+  font-style: italic;
+  font-size: 0.92rem;
+}
+.muted { color: var(--muted); }
+.count {
+  display: inline-block;
+  padding: 1px 9px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  vertical-align: middle;
+}
+.plain { padding-left: 20px; }
+.plain li { margin-bottom: 8px; }
