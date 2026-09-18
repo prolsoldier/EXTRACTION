@@ -1,2 +1,217 @@
-# EXTRACTION
-scraper
+# EXTRACTION — anonboard
+
+A self-hosted anonymous message board with multiple boards on one instance.
+You start threads; anyone can reply anonymously. No accounts, no analytics,
+no IP addresses on disk.
+
+**Zero dependencies.** Nothing from npm — it runs on the Node standard library
+and the built-in `node:sqlite`. There is no install step, no lockfile, no
+supply chain to trust.
+
+## Run it
+
+```bash
+cp .env.example .env
+
+# generate the two secrets
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # -> ADMIN_TOKEN
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # -> SECRET_KEY
+
+npm start          # http://127.0.0.1:3000
+npm test           # 45 tests, no network needed
+npm run dev        # auto-restart on change
+```
+
+Requires Node 22.5 or newer (for `node:sqlite`).
+
+## Boards
+
+One instance hosts as many boards as you want, each with its own name,
+description and URL. A fresh database is seeded with:
+
+| Slug | Board |
+|---|---|
+| `/b/organizing` | Organizing — workplace and tenant organizing |
+| `/b/theory` | Theory — reading, study groups, argument |
+| `/b/news` | News & Analysis |
+| `/b/femboys` | Femboy Fan Club |
+| `/b/general` | General |
+| `/b/kind-words` | Kind Words — an anonymous notes wall |
+
+Those are a starting point, not a fixture. Rename, reorder, lock, delete or
+add boards at `/manage` — and the seed only runs on a genuinely empty
+database, so a board you delete stays deleted across restarts.
+
+### Two kinds of board
+
+- **Forum** — you start threads, anyone replies anonymously.
+- **Wall** — no threads at all. Anyone can post a short note straight onto one
+  continuous stream, newest first, without a login. Good for an anonymous
+  suggestion box, a shout-out wall, or a place for people to leave something
+  kind without attaching their name to it.
+
+Pick the kind when you create a board at `/manage`. A wall is capped at 1,000
+characters per note and is rate-limited exactly like replies, so it cannot be
+turned into a spam firehose. You can delete any individual note.
+
+Locking a board stops new threads and new replies but leaves everything
+readable. Deleting one hides it and its threads; nothing is erased from disk,
+so a deletion made in anger is recoverable with a SQL update.
+
+## Moderation
+
+The owner controls everything on the board, and has three tools for it.
+
+**Reports.** Anyone can report any post, with an optional reason. Reporting
+needs no login and is itself anonymous — the `reports` table stores the message,
+the reason and the time, and nothing that identifies who filed it. A second
+report on an already-open one is accepted silently rather than stacking
+duplicates. Reports are rate-limited like posts, so the queue cannot be flooded.
+
+**Pre-moderation.** Any board can be set to hold every post until the owner
+approves it. Held posts are invisible to the public, do not count toward the
+reply count, and cannot bump a thread — so the queue can't be used to push a
+thread up the board before anyone has read it. The owner sees them in place,
+marked, and never has to wait behind their own queue.
+
+**The queue.** `/moderate` shows everything waiting on a decision — held posts
+and open reports — with approve, remove and dismiss on each. The header carries
+a live count.
+
+### Why there is no ban button
+
+Poster tokens rotate daily by design (see **Anonymity**), so a ban keyed on one
+would expire within a day and could be walked around immediately. Rather than
+ship a control that looks like it works and doesn't, the board offers
+pre-moderation, which actually holds. This is a real trade: the board cannot
+durably exclude a specific person, and in exchange it cannot build a profile of
+anyone either.
+
+## Rules
+
+`/rules` is public and linked from every page. The default text is deliberately
+concrete — it names harassment, outing, speculation about people's bodies, and
+bigotry as removable, because a board that only says "be respectful" tells a
+reader nothing about whether their particular problem will be taken seriously.
+Override it with `BOARD_RULES`.
+
+## How it works
+
+Two kinds of visitor:
+
+| | Anonymous visitor | Owner |
+|---|---|---|
+| Read any board | yes | yes |
+| Reply to a thread | yes, no login | yes |
+| Post a note on a wall | yes, no login | yes |
+| Report a post | yes, no login | yes |
+| Start a thread | no | yes |
+| Approve, remove, dismiss | no | yes |
+| Pin / lock / delete threads | no | yes |
+| Create and manage boards | no | yes |
+
+The owner logs in at `/login` with `ADMIN_TOKEN`. That is the only login in the
+system. Everyone else just types and posts.
+
+## Anonymity
+
+This is the part worth reading carefully, because "anonymous" is a claim most
+software makes and few honour.
+
+- **No IP address is ever written to disk.** The client IP is read into memory,
+  HMAC'd, and discarded inside a single function (`posterToken` in
+  `src/util.js`). Nothing downstream ever sees it.
+- **The hash rotates daily.** The HMAC salt is `SECRET_KEY + today's UTC date`,
+  so a poster's token on Tuesday cannot be matched to the same poster on
+  Wednesday — not even by whoever holds the database *and* the secret key.
+- **The hash exists only to rate-limit**, and those rows are pruned every ten
+  minutes so the limiter table never accumulates into a usage history.
+- **Reports carry no reporter.** A report records what was reported and why,
+  and nothing about who filed it — not a name, not a session, not a hash.
+- **No cookies for readers or posters.** The only cookie in the system is the
+  owner's session, and it is `HttpOnly; SameSite=Strict`.
+- **No third-party requests.** No fonts, no CDN, no scripts. The CSP is
+  `default-src 'none'`, so the browser is instructed to refuse them even if one
+  were ever introduced by accident.
+- **`Referrer-Policy: no-referrer`**, so clicking out of the board does not tell
+  the destination where the visitor came from.
+
+You can check the first claim yourself, on a live database:
+
+```bash
+strings data/board.db | grep -E '127\.0\.0\.1|::1'   # returns nothing
+```
+
+The privacy guarantee is only as good as the machine it runs on. Run it
+somewhere you control. If you put it behind a reverse proxy, that proxy's
+access log is the weak link — turn it off.
+
+**Know what this is not.** This makes posters anonymous *to each other and to
+you*. It does not hide anything from someone watching the network, and it does
+not protect the server itself: whoever controls the host, the hosting company,
+or the domain can still take it down or be compelled to hand it over. If people
+are going to discuss anything that puts them at risk, that threat model needs
+answering somewhere other than this codebase — a board like this is for open
+discussion, not for operational security.
+
+## Other hardening
+
+- Every piece of user text is HTML-escaped before it reaches a page; the test
+  suite asserts that injected `<script>` and `<img onerror>` come back inert.
+- Session cookies are HMAC-signed with an expiry, so a forged cookie is
+  rejected (tested).
+- The admin token is compared in constant time.
+- Request bodies are capped at 64 KB; messages at 10,000 characters.
+- Login attempts are limited to 10 per hour per rotating token.
+- A hidden honeypot field silently swallows the submission when a bot fills it
+  in — the bot gets a normal-looking redirect and the post is dropped.
+- `X-Forwarded-For` is ignored unless `TRUST_PROXY=1`, so nobody can forge a
+  header to escape the rate limiter.
+
+## Configuration
+
+All via `.env` (see `.env.example`):
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `ADMIN_TOKEN` | yes | Owner login. 16+ characters. |
+| `SECRET_KEY` | yes | Signs cookies, salts poster hashes. |
+| `PORT` / `HOST` | no | Default `3000` / `127.0.0.1`. |
+| `BOARD_TITLE` / `BOARD_TAGLINE` | no | Header text. |
+| `DB_PATH` | no | Default `./data/board.db`. |
+| `TRUST_PROXY` | no | `1` only behind a proxy you control. |
+| `BOARD_RULES` | no | Replaces the default house rules at `/rules`. |
+
+Changing `SECRET_KEY` logs out the owner and resets rate limits. Nothing else
+is affected.
+
+## Layout
+
+```
+src/server.js   HTTP routing, auth, moderation, board management, CLI entry
+src/db.js       SQLite schema, migrations, and queries
+src/views.js    HTML rendering
+src/util.js     escaping, hashing, cookie signing, slugs, rate-limit tokens
+public/style.css
+test/board.test.js
+```
+
+Routes:
+
+```
+/                       board index
+/b/<slug>               a board: threads, or a wall's notes
+/b/<slug>/post          leave a note on a wall (anonymous)
+/rules                  house rules, public
+/moderate               approval queue and reports (owner only)
+/threads/<id>           a thread and its replies
+/manage                 board management (owner only)
+/login                  owner login
+/healthz                board, thread and message counts
+```
+
+## Formatting
+
+Blank lines make paragraphs. A line starting with `>` renders as a quote. That
+is the whole markup language — deliberately, since every additional feature is
+another way to smuggle markup into someone else's browser.
