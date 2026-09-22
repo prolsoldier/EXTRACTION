@@ -1,0 +1,13 @@
+{
+  "name": "deal-hunter",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Userscript that ranks KSL and Facebook Marketplace listings while you browse",
+  "scripts": {
+    "test": "node --check deal-hunter.user.js && node --test",
+    "test:e2e": "node tests/e2e.browser.cjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.1"
+  }
+}
