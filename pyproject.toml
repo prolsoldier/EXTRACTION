@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "samsung-firmware-flash-orchestration"
+version = "1.0.0"
+description = "Asynchronous firmware flashing pipeline for Samsung SM-A376U devices"
+requires-python = ">=3.10"
+dependencies = [
+    "pyusb>=1.2.1",
+    "lz4>=4.3.2",
+    "pydantic>=2.5.0",
+    "structlog>=24.1.0",
+    "asyncio-contextmanager>=1.0.0",
+    "attrs>=23.2.0",
+]
+
+[tool.uv]
+python-version = "3.10"
