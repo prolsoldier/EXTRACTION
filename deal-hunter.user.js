@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Deal Hunter — KSL + FB Marketplace
 // @namespace    https://github.com/prolsoldier/extraction
-// @version      2.0.0
-// @description  Scores listings on pages you browse, tracks price drops, dedupes cross-posts, and pools the best finds from every open tab into one ranked list.
+// @version      3.0.0
+// @description  Ranks KSL + FB Marketplace listings while you browse: learns local prices, catches misspelled and motivated-seller listings, tracks drops, and pools the best finds from every tab.
 // @match        https://classifieds.ksl.com/*
 // @match        https://www.facebook.com/marketplace/*
 // @updateURL    https://raw.githubusercontent.com/prolsoldier/EXTRACTION/main/deal-hunter.user.js
@@ -34,13 +34,19 @@
     pruneDays: 21,        // forget unwatched finds not seen for this long
     notify: true,
     huntDelayMs: 4000,    // gap between tabs opened by "Hunt all"
+    huntSites: ['KSL', 'FB'],
+    // Categories you still need rank higher. Remove one once you've bought it.
+    needs: ['Center', 'Subwoofer', 'Surround/Bookshelf', 'Hard drive', 'Camera'],
     searches: [
       // speakers to finish a 7.1 receiver setup
       'center channel speaker', 'subwoofer', 'surround speakers', 'bookshelf speakers',
       'home theater speakers', '5.1 speakers', 'tower speakers', 'speaker stands',
+      'klipsch', 'polk audio', 'free speakers', 'receiver and speakers',
+      // common misspellings: fewer buyers find these
+      'subwofer', 'klipsh', 'speeker',
       // security / home defense
       'security camera', 'poe camera', 'surveillance hard drive', 'video doorbell',
-      'floodlight camera', 'motion sensor light', 'smart lock', 'deadbolt', 'safe',
+      'floodlight camera', 'motion sensor light', 'smart lock', 'deadbolt', 'safe', 'nvr', 'wd purple',
     ],
   };
 
@@ -67,11 +73,13 @@
   // perUnit: price is divided by the parsed quantity before comparing.
   const RULES = [
     { cat: 'System 5.1', re: /\b(5\.1|7\.1|home theat(er|re) (system|speakers?|set|package)|surround sound system)\b/i, steal: 100, fair: 250 },
-    { cat: 'Center', re: /\bcent(er|re)\b/i, steal: 30, fair: 70 },
-    { cat: 'Subwoofer', re: /\bsub ?woofer|\bsub\b/i, steal: 50, fair: 110, not: /\b(car|truck|jeep|enclosure|box only|amp kit|marine|kicker|rockford|jl audio)\b/i },
-    { cat: 'Towers', re: /\b(tower|floor ?stand(ing)?)\b/i, steal: 80, fair: 170, pair: true },
+    { cat: 'Center', re: /\bcent(er|re)\b/i, steal: 30, fair: 70, not: /\b(entertainment|tv|media|command|console|shopping|piece|table|stand|cabinet|wall unit)\b/i },
+    { cat: 'Subwoofer', re: /\bsub ?woofer|\bsub\b/i, steal: 50, fair: 110, not: /\b(car|truck|jeep|enclosure|box only|amp kit|marine|kicker|rockford|jl audio|zero|panel|pump|sandwich)\b/i },
+    { cat: 'Towers', re: /\b(tower|floor ?stand(ing)?)\b/i, steal: 80, fair: 170, pair: true, not: /\b(fan|pc|computer|gaming|heater|shelf|bookcase|cat|lamp|light|rack)\b/i },
     { cat: 'Stands', re: /\bspeaker stands?\b/i, steal: 15, fair: 40 },
     { cat: 'Surround/Bookshelf', re: /\b(surround|bookshelf|satellite|rear|monitor) speakers?\b/i, steal: 35, fair: 80, pair: true },
+    // Catch-all so model-only titles ("Sony SS-CS5 speakers") still get scored.
+    { cat: 'Speakers', re: /\bspeakers?\b/i, steal: 30, fair: 70, pair: true, not: /\b(bluetooth|portable|wireless|pa|dj|computer|pc|gaming|usb|car|door|soundbar|sound bar|flip|charge|soundlink|echo|alexa|smart speaker|karaoke|party)\b/i },
     { cat: 'Camera kit', re: /\b(nvr|dvr)\b.*\b(camera|cam)s?\b|\b(camera|cctv|surveillance|security) (system|kit)\b/i, steal: 70, fair: 150 },
     { cat: 'Camera', re: /\b(poe|ip|security|surveillance|outdoor|floodlight|bullet|dome|turret) ?(cam|camera)s?\b|\b(reolink|amcrest|wyze|eufy|arlo|blink|hikvision|dahua|annke)\b/i, steal: 25, fair: 60, perUnit: true },
     { cat: 'Doorbell', re: /\bdoorbell\b/i, steal: 30, fair: 70 },
@@ -83,32 +91,83 @@
 
   // Known models → fair used price (overrides category + brand allowance).
   const MODELS = [
-    { re: /\bpolk\b.*\bcs ?(1|10)\b/i, fair: 50 },
-    { re: /\bpolk\b.*\bpsw ?(10|110|111)\b/i, fair: 70 },
-    { re: /\bpolk\b.*\b(monitor ?70|rti ?(a)?[579])\b/i, fair: 200 },
-    { re: /\bklipsch\b.*\br-?25c\b/i, fair: 70 },
-    { re: /\bklipsch\b.*\brp-?(450|500|504)c\b/i, fair: 130 },
-    { re: /\bklipsch\b.*\br-?(10|100|12|120)sw\b/i, fair: 100 },
-    { re: /\bklipsch\b.*\brp-?600m\b/i, fair: 250 },
-    { re: /\bpioneer\b.*\bsp-?c22\b/i, fair: 50 },
-    { re: /\bpioneer\b.*\bsp-?bs22\b/i, fair: 50 },
-    { re: /\bpioneer\b.*\bsw-?8\b/i, fair: 60 },
-    { re: /\bbic\b.*\b(pl-?200|pl-?300)\b/i, fair: 180 },
-    { re: /\bbic\b.*\bf-?12\b/i, fair: 110 },
-    { re: /\bdayton\b.*\bsub-?1000\b/i, fair: 50 },
-    { re: /\bdayton\b.*\bsub-?1200\b/i, fair: 70 },
-    { re: /\bsvs\b.*\bsb-?1000\b/i, fair: 300 },
-    { re: /\breolink\b.*\brlc-?5\d\d[a-z]?\b/i, fair: 30, perUnit: true },
-    { re: /\bwd purple\b.*\b2 ?tb\b/i, fair: 30, perUnit: true },
-    { re: /\bwd purple\b.*\b4 ?tb\b/i, fair: 50, perUnit: true },
-    { re: /\bring\b.*\bfloodlight\b/i, fair: 80 },
-    { re: /\bring\b.*\bdoorbell\b/i, fair: 40 },
+    { name: 'Polk CS1/CS10', re: /\bpolk\b.*\bcs ?(1|10)\b/i, fair: 50 },
+    { name: 'Polk PSW10/110', re: /\bpolk\b.*\bpsw ?(10|110|111)\b/i, fair: 70 },
+    { name: 'Polk Monitor 70/RTi', re: /\bpolk\b.*\b(monitor ?70|rti ?(a)?[579])\b/i, fair: 200 },
+    { name: 'Polk T15', re: /\bpolk\b.*\bt ?15\b/i, fair: 45 },
+    { name: 'Polk T30', re: /\bpolk\b.*\bt ?30\b/i, fair: 45 },
+    { name: 'Polk T50', re: /\bpolk\b.*\bt ?50\b/i, fair: 110 },
+    { name: 'Polk ES10/ES15', re: /\bpolk\b.*\bes ?1[05]\b/i, fair: 90 },
+    { name: 'Klipsch R-25C', re: /\bklipsch\b.*\br-?25c\b/i, fair: 70 },
+    { name: 'Klipsch R-52C', re: /\bklipsch\b.*\br-?52c\b/i, fair: 90 },
+    { name: 'Klipsch RP-450/500C', re: /\bklipsch\b.*\brp-?(450|500|504)c\b/i, fair: 130 },
+    { name: 'Klipsch R-10/12SW', re: /\bklipsch\b.*\br-?(10|100|12|120)sw\b/i, fair: 100 },
+    { name: 'Klipsch R-41M/51M', re: /\bklipsch\b.*\br-?(41|51)m\b/i, fair: 90 },
+    { name: 'Klipsch RP-600M', re: /\bklipsch\b.*\brp-?600m\b/i, fair: 250 },
+    { name: 'Klipsch RP-5000F/6000F', re: /\bklipsch\b.*\brp-?(5000|6000)f\b/i, fair: 400 },
+    { name: 'Pioneer SP-C22', re: /\bpioneer\b.*\bsp-?c22\b/i, fair: 50 },
+    { name: 'Pioneer SP-BS22', re: /\bpioneer\b.*\bsp-?bs22\b/i, fair: 50 },
+    { name: 'Pioneer SP-FS52', re: /\bpioneer\b.*\bsp-?fs52\b/i, fair: 120 },
+    { name: 'Pioneer SW-8', re: /\bpioneer\b.*\bsw-?8\b/i, fair: 60 },
+    { name: 'ELAC Debut B5/B6', re: /\belac\b.*\b(db|b) ?[56]\b/i, fair: 150 },
+    { name: 'Sony SS-CS3/CS5', re: /\bsony\b.*\bss-?cs[35]\b/i, fair: 60 },
+    { name: 'Sony SS-CS8', re: /\bsony\b.*\bss-?cs8\b/i, fair: 40 },
+    { name: 'Yamaha NS-SW100/200', re: /\byamaha\b.*\bns-?sw(050|100|200)\b/i, fair: 70 },
+    { name: 'BIC PL-200/300', re: /\bbic\b.*\b(pl-?200|pl-?300)\b/i, fair: 180 },
+    { name: 'BIC F12', re: /\bbic\b.*\bf-?12\b/i, fair: 110 },
+    { name: 'Dayton SUB-1000', re: /\bdayton\b.*\bsub-?1000\b/i, fair: 50 },
+    { name: 'Dayton SUB-1200', re: /\bdayton\b.*\bsub-?1200\b/i, fair: 70 },
+    { name: 'Monoprice 8/10in sub', re: /\bmonoprice\b.*\bsub/i, fair: 60 },
+    { name: 'SVS SB-1000', re: /\bsvs\b.*\bsb-?1000\b/i, fair: 300 },
+    { name: 'SVS PB-1000', re: /\bsvs\b.*\bpb-?1000\b/i, fair: 350 },
+    { name: 'Reolink RLC-5xx', re: /\breolink\b.*\brlc-?5\d\d[a-z]?\b/i, fair: 30, perUnit: true },
+    { name: 'Reolink RLC-8xx', re: /\breolink\b.*\brlc-?8\d\d[a-z]?\b/i, fair: 45, perUnit: true },
+    { name: 'Amcrest IP5M/IP8M', re: /\bamcrest\b.*\bip[58]m\b/i, fair: 35, perUnit: true },
+    { name: 'Wyze Cam', re: /\bwyze\b.*\bcam\b/i, fair: 15, perUnit: true },
+    { name: 'WD Purple 1-2TB', re: /\b(wd|western digital) purple\b.*\b[12] ?tb\b/i, fair: 30, perUnit: true },
+    { name: 'WD Purple 4TB', re: /\b(wd|western digital) purple\b.*\b4 ?tb\b/i, fair: 50, perUnit: true },
+    { name: 'Seagate SkyHawk', re: /\bskyhawk\b/i, fair: 35, perUnit: true },
+    { name: 'Ring Floodlight Cam', re: /\bring\b.*\bfloodlight\b/i, fair: 80 },
+    { name: 'Ring Doorbell', re: /\bring\b.*\bdoorbell\b/i, fair: 40 },
+    { name: 'Schlage Encode', re: /\bschlage\b.*\bencode\b/i, fair: 110 },
   ];
 
   const PREMIUM = /\b(klipsch|polk|definitive|def tech|svs|elac|paradigm|kef|b&w|bowers|pioneer|andrew jones|bic|infinity|energy|psb|monitor audio|jbl studio|q acoustics|wharfedale|sony core|reolink|amcrest|ubiquiti|unifi|schlage|yale|kwikset|stack-?on|liberty)\b/i;
   const BROKEN = /\b(broken|for parts|parts only|not working|doesn'?t work|blown|as[- ]is|needs repair|cracked|untested)\b/i;
   const WANTED = /\b(iso|wanted|looking for|wtb|in search of)\b/i;
+  const LIKE_NEW = /\b(new in box|nib|brand new|sealed|like new|mint|barely used|never used|unopened)\b/i;
+  const BUNDLE = /\b(lot|bundle|everything|whole (set|system)|(with|and|\+) (a )?receiver|complete (set|system))\b/i;
+  const SOLD = /^(sold|pending|sale pending)$/i;
   const SCAMMY = /\b(zelle|cash ?app|venmo only|deposit|ship(ping)? only|will ship|text me at|email me|\d{3}[-. ]\d{3}[-. ]\d{4})\b/i;
+
+  // Common misspellings. Listings with these get fewer buyers, so they often sit cheap.
+  // [pattern, replacement, isTypo]. Real misspellings get fewer buyers, so they often sit cheap;
+  // the non-typo rows only normalize spelling variants so the rules match.
+  const TYPOS = [
+    [/\bsub ?w(?:o|oo|ooo)f+e?rs?\b|\bsub ?whoofers?\b/gi, 'subwoofer', true],
+    [/\bsp(?:ee|ea|e)k(?:e|a)?rs?\b|\bspeakes\b/gi, m => (/s$/i.test(m) ? 'speakers' : 'speaker'), true],
+    [/\bcnter\b|\bcenter ?chanel\b/gi, 'center', true],
+    [/\bklip(?:sh|ch|she|shc)\b/gi, 'klipsch', true],
+    [/\bsecurty\b|\bsecuirty\b/gi, 'security', true],
+    [/\bcamra\b|\bcamer\b/gi, 'camera', true],
+    [/\bcentre\b/gi, 'center', false],
+    [/\bhome ?theat(?:er|re|or)\b/gi, 'home theater', false],
+    [/\bdefinitive technology\b/gi, 'definitive', false],
+  ];
+
+  function normalizeTitle(title) {
+    let t = String(title || '');
+    let typo = false;
+    const squash = x => x.toLowerCase().replace(/\s+/g, '');
+    for (const [re, to, isTypo] of TYPOS) {
+      t = t.replace(re, m => {
+        const fixed = typeof to === 'function' ? to(m) : to;
+        if (isTypo && squash(fixed) !== squash(m)) typo = true;
+        return fixed;
+      });
+    }
+    return { text: t, typo };
+  }
 
   function parsePrice(text) {
     if (!text) return null;
@@ -153,41 +212,134 @@
   }
 
   const round5 = n => Math.max(5, Math.round(n / 5) * 5);
+  const DAY = 864e5;
 
-  function score(item, cfg = DEFAULTS) {
-    const t = item.title || '';
-    if (!t || WANTED.test(t) || item.price == null) return null;
-    const rule = RULES.find(r => r.re.test(t) && !(r.not && r.not.test(t)));
-    if (!rule) return null;
-    const model = MODELS.find(m => m.re.test(t));
+  // ---- local market: what things actually list for around here ----------------
+  const MARKET_MIN = 5; // samples before the local median is trusted
+  const MARKET_CAP = 60; // most recent samples kept per key
+
+  function median(xs) {
+    const a = [...xs].sort((x, y) => x - y);
+    const m = a.length >> 1;
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  }
+
+  // Record one listing's per-unit asking price under its model (or category) key.
+  function recordMarket(market, key, id, unitPrice) {
+    if (!key || !(unitPrice > 0)) return;
+    const bucket = (market[key] = market[key] || {});
+    delete bucket[id];
+    bucket[id] = unitPrice;
+    const ids = Object.keys(bucket);
+    for (let i = 0; i < ids.length - MARKET_CAP; i++) delete bucket[ids[i]];
+  }
+
+  function marketMedian(market, key) {
+    const xs = market && market[key] ? Object.values(market[key]) : [];
+    return xs.length >= MARKET_MIN ? median(xs) : null;
+  }
+
+  function classify(title) {
+    const { text, typo } = normalizeTitle(title);
+    const rule = RULES.find(r => r.re.test(text) && !(r.not && r.not.test(text)));
+    const model = rule ? MODELS.find(m => m.re.test(text)) : null;
+    return { text, typo, rule, model, key: model ? model.name : rule ? rule.cat : null };
+  }
+
+  function score(item, cfg = DEFAULTS, market = null, now = Date.now()) {
+    if (!item.title || item.price == null) return null;
+    const { text: t, typo, rule, model, key } = classify(item.title);
+    if (WANTED.test(t) || !rule) return null;
     const premium = PREMIUM.test(t);
     let fair, steal;
-    if (model) { fair = model.fair; steal = model.fair * 0.5; }
-    else { const mult = premium ? 1.6 : 1; fair = rule.fair * mult; steal = rule.steal * mult; }
+    if (model) {
+      fair = model.fair;
+      steal = model.fair * 0.5;
+    } else {
+      const mult = premium ? 1.6 : 1;
+      fair = rule.fair * mult;
+      steal = rule.steal * mult;
+    }
     const perUnit = model ? model.perUnit : rule.perUnit;
     const qty = perUnit ? parseQty(t) : 1;
     // Pair categories are priced per pair; "single" or a singular "speaker" means one unit.
     const single = /\b(single|one|1 speaker)\b/i.test(t) || (/\bspeaker\b/i.test(t) && !/\b(speakers|pair|set)\b/i.test(t));
-    if (rule.pair && single) { fair /= 2; steal /= 2; }
+    const half = rule.pair && single;
+    if (half) {
+      fair /= 2;
+      steal /= 2;
+    }
+    // Blend in the local median once enough listings have been seen.
+    const local = marketMedian(market, key);
+    if (local != null) {
+      const localUnit = half ? local / 2 : local;
+      const ratio = steal / fair;
+      fair = (fair + localUnit) / 2;
+      steal = fair * ratio;
+    }
+
     const unit = item.price / qty;
     const broken = BROKEN.test(t);
     const scam = SCAMMY.test(t) || (item.price > 0 && unit < fair * 0.12);
+    const likeNew = LIKE_NEW.test(t);
+    const bundle = BUNDLE.test(t);
+    const notes = [];
+    if (rule.cat === 'Subwoofer' && /\bpassive\b/i.test(t)) notes.push('passive sub needs an amp');
+    if (typo) notes.push('misspelled title');
+
+    // Motivated seller: already cut the price, or it's been sitting a week.
+    const drops = item.wasPrice > item.price ? 1 : 0;
+    const histDrops = (item.history || []).filter((h, i, a) => i && h[1] < a[i - 1][1]).length;
+    const daysListed = item.firstSeen ? (now - item.firstSeen) / DAY : 0;
+    const motivated = drops + histDrops > 0 || daysListed >= 7;
+    if (motivated) notes.push(drops + histDrops ? 'price already cut' : `listed ${Math.floor(daysListed)}+ days`);
+
     let tier = unit <= steal ? 'STEAL' : unit <= fair ? 'GOOD' : 'PASS';
     if (item.price === 0) tier = 'FREE';
     if (broken) tier = 'PARTS';
+    if (item.sold) tier = 'SOLD';
 
     const miles = item.miles !== undefined ? item.miles : milesFrom(item.location, cfg.home);
     let value = (fair - unit) / fair;
     if (premium || model) value += 0.1;
     if (miles != null) value += miles <= cfg.maxMiles ? 0.15 * (1 - miles / cfg.maxMiles) : -0.25;
     if (item.ageHours != null && item.ageHours < 24) value += 0.1;
+    if ((cfg.needs || []).includes(rule.cat)) value += 0.15;
+    if (typo) value += 0.05;
+    if (motivated) value += 0.05;
+    if (likeNew) value += 0.05;
+    if (bundle) value += 0.1;
+    if (notes.includes('passive sub needs an amp')) value -= 0.3;
     if (broken) value -= 1;
     if (scam) value -= 0.3;
+    if (item.sold) value -= 2;
 
-    const offer = tier === 'FREE' ? 0 : unit <= steal ? item.price : Math.min(item.price, Math.max(round5(steal * qty), round5(item.price * cfg.offerPct)));
+    const pct = cfg.offerPct - (motivated ? 0.1 : 0);
+    const offer =
+      tier === 'FREE' ? 0 : unit <= steal ? item.price : Math.min(item.price, Math.max(round5(steal * qty), round5(item.price * pct)));
     return {
-      ...item, cat: rule.cat, model: !!model, premium, broken, scam, tier, qty, miles,
-      fair: Math.round(fair * qty), value: Math.round(value * 100) / 100, offer,
+      ...item,
+      cat: rule.cat,
+      modelName: model ? model.name : null,
+      model: !!model,
+      marketKey: key,
+      local: local != null ? Math.round(local) : null,
+      premium,
+      broken,
+      scam,
+      likeNew,
+      bundle,
+      typo,
+      motivated,
+      notes,
+      tier,
+      qty,
+      miles,
+      unit,
+      fair: Math.round(fair * qty),
+      below: Math.round((1 - unit / fair) * 100),
+      value: Math.round(value * 100) / 100,
+      offer,
     };
   }
 
@@ -240,34 +392,39 @@
 
   function searchUrls(cfg = DEFAULTS) {
     const urls = [];
+    const sites = cfg.huntSites || ['KSL', 'FB'];
     cfg.searches.forEach(q => {
       const e = encodeURIComponent(q);
-      urls.push(`https://classifieds.ksl.com/search/keyword/${e}/zip/${cfg.kslZip}/miles/${cfg.kslMiles}`);
+      if (sites.includes('KSL')) urls.push(`https://classifieds.ksl.com/search/keyword/${e}/zip/${cfg.kslZip}/miles/${cfg.kslMiles}`);
       // FB uses the location saved in your Marketplace settings.
-      urls.push(`https://www.facebook.com/marketplace/search/?query=${e}&sortBy=creation_time_descend&daysSinceListed=${cfg.fbDays}`);
+      if (sites.includes('FB')) urls.push(`https://www.facebook.com/marketplace/search/?query=${e}&sortBy=creation_time_descend&daysSinceListed=${cfg.fbDays}`);
     });
     return urls;
   }
 
   function toCSV(rows) {
-    const cols = ['tier', 'cat', 'price', 'offer', 'fair', 'qty', 'value', 'miles', 'site', 'location', 'status', 'dropFrom', 'title', 'url'];
-    const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const cols = ['tier', 'cat', 'modelName', 'price', 'offer', 'fair', 'below', 'local', 'qty', 'value', 'miles', 'site', 'location', 'status', 'dropFrom', 'notes', 'title', 'url'];
+    const q = v => `"${String(Array.isArray(v) ? v.join('; ') : (v ?? '')).replace(/"/g, '""')}"`;
     return [cols.join(',')].concat(rows.map(r => cols.map(c => q(r[c])).join(','))).join('\n');
   }
 
-  const core = { DEFAULTS, RULES, MODELS, CITIES, parsePrice, parseQty, milesFrom, parseAgeHours, score, offerMessage, dupKey, mergeSighting, prune, groupDupes, searchUrls, toCSV };
+  const core = {
+    DEFAULTS, RULES, MODELS, CITIES, normalizeTitle, classify, parsePrice, parseQty, milesFrom, parseAgeHours, score,
+    recordMarket, marketMedian, offerMessage, dupKey, mergeSighting, prune, groupDupes, searchUrls, toCSV,
+  };
   if (typeof module !== 'undefined' && module.exports) { module.exports = core; return; }
 
   // ===========================================================================
   // Browser — site parsers, storage, UI. Reads only what's already rendered.
   // ===========================================================================
 
-  const POOL_KEY = 'dealPool', CFG_KEY = 'dealCfg', UI_KEY = 'dealUi';
-  const TIER_COLOR = { FREE: '#16a34a', STEAL: '#16a34a', GOOD: '#ca8a04', PASS: '#9ca3af', PARTS: '#dc2626' };
+  const POOL_KEY = 'dealPool', CFG_KEY = 'dealCfg', UI_KEY = 'dealUi', MARKET_KEY = 'dealMarket';
+  const TIER_COLOR = { FREE: '#16a34a', STEAL: '#16a34a', GOOD: '#ca8a04', PASS: '#9ca3af', PARTS: '#dc2626', SOLD: '#6b7280' };
   const gmGet = (k, d) => { try { return GM_getValue(k, d); } catch (e) { return d; } };
   const cfg = () => ({ ...DEFAULTS, ...gmGet(CFG_KEY, {}) });
   const loadPool = () => gmGet(POOL_KEY, {});
   const savePool = p => GM_setValue(POOL_KEY, p);
+  const loadMarket = () => gmGet(MARKET_KEY, {});
   const ui = () => ({ tier: 'good', cat: 'all', sort: 'value', q: '', collapsed: false, ...gmGet(UI_KEY, {}) });
   const setUi = patch => GM_setValue(UI_KEY, { ...ui(), ...patch });
 
@@ -281,17 +438,24 @@
     return text.split('\n').map(s => s.trim()).filter(Boolean);
   }
 
+  // First $ line is the asking price; a higher second one is the struck-through original.
+  function readPrices(lines) {
+    const prices = lines.filter(l => /^(\$|free$)/i.test(l)).map(parsePrice).filter(p => p != null);
+    const price = prices.length ? prices[0] : null;
+    const wasPrice = prices.length > 1 && prices[1] > price ? prices[1] : null;
+    return { price, wasPrice, sold: lines.some(l => SOLD.test(l)) };
+  }
+
   function parseKSL(root) {
     const out = [];
     root.querySelectorAll('a[data-item-id]').forEach(a => {
       if (a.closest('#dh-panel')) return;
       const lines = cardLines(a);
-      const priceLine = lines.find(l => /^\$|^free$/i.test(l));
       const locLine = lines.find(l => /,\s*UT\b/.test(l)) || lines.find((l, i) => lines[i + 2] === 'UT');
       out.push({
         el: a, site: 'KSL', id: 'ksl:' + a.dataset.itemId, url: a.href,
         title: a.getAttribute('aria-label') || lines.find(l => !/^\$/.test(l)) || '',
-        price: parsePrice(priceLine),
+        ...readPrices(lines),
         location: locLine ? locLine.replace(/,\s*UT.*/, '') : '',
         ageHours: parseAgeHours(lines),
       });
@@ -307,12 +471,12 @@
       const lines = cardLines(a);
       if (!lines.length) return;
       // FB card text order: price (sometimes old price struck through), title, location[, mileage]
-      const priceIdx = lines.findIndex(l => /^(\$|free)/i.test(l));
-      const rest = lines.filter((l, i) => i !== priceIdx && !/^\$/.test(l));
+      const rest = lines.filter(l => !/^(\$|free$)/i.test(l) && !SOLD.test(l));
       out.push({
         el: a, site: 'FB', id: 'fb:' + id,
         url: 'https://www.facebook.com/marketplace/item/' + id + '/',
-        title: rest[0] || '', price: parsePrice(lines[priceIdx]),
+        title: rest[0] || '',
+        ...readPrices(lines),
         location: (rest[1] || '').replace(/,\s*UT.*/, ''),
         ageHours: parseAgeHours(lines),
       });
@@ -326,16 +490,20 @@
     const b = document.createElement('div');
     b.className = 'dh-badge';
     const bits = [item.tier, item.cat];
-    if (item.tier !== 'PASS') bits.push(`fair ~$${item.fair}`);
+    if (item.tier === 'STEAL' || item.tier === 'GOOD') bits.push(`${item.below}% under`);
+    if (item.tier !== 'PASS' && item.tier !== 'SOLD') bits.push(`fair ~$${item.fair}`);
     if (item.qty > 1) bits.push(`×${item.qty}`);
     if (item.miles != null) bits.push(`${item.miles} mi`);
     if (item.scam) bits.push('⚠ scam?');
+    if (item.motivated) bits.push('motivated');
+    if (item.typo) bits.push('typo');
     b.textContent = bits.join(' · ');
     b.style.cssText = `position:absolute;top:4px;left:4px;z-index:9;padding:2px 6px;border-radius:4px;font:600 11px system-ui;color:#fff;background:${item.scam ? '#7c3aed' : TIER_COLOR[item.tier]}`;
     if (getComputedStyle(item.el).position === 'static') item.el.style.position = 'relative';
     item.el.appendChild(b);
     item.el.style.outline = item.tier === 'STEAL' || item.tier === 'FREE' ? `3px solid ${TIER_COLOR[item.tier]}` : '';
-    item.el.style.opacity = item.tier === 'PASS' || item.tier === 'PARTS' ? '0.45' : '';
+    item.el.style.opacity = ['PASS', 'PARTS', 'SOLD'].includes(item.tier) ? '0.45' : '';
+    b.title = item.notes.join(' · ') + (item.local ? ` · local median $${item.local}` : '');
   }
 
   function notify(title, rec) {
@@ -347,23 +515,31 @@
     const c = cfg();
     const raw = location.host.includes('ksl.com') ? parseKSL(document) : parseFB(document);
     const pool = loadPool();
+    const market = loadMarket();
+    const marketBefore = JSON.stringify(market);
     let changed = false;
     raw.forEach(r => {
-      const item = score(r, c);
+      const known = pool[r.id];
+      // Carry history forward so "sitting a week" and past drops count toward motivation.
+      const item = score({ ...r, firstSeen: known && known.firstSeen, history: known && known.history }, c, market);
       if (!item) return;
-      const known = pool[item.id];
-      if (known && known.status === 'hidden') { item.el.style.opacity = '0.3'; return; }
+      if (!item.sold && !item.broken && !item.scam) recordMarket(market, item.marketKey, item.id, item.unit);
+      if (known && known.status === 'hidden') {
+        item.el.style.opacity = '0.3';
+        return;
+      }
       badge(item);
-      if (item.tier === 'PASS' && !known) return;
+      if ((item.tier === 'PASS' || item.tier === 'SOLD') && !known) return;
       const { el, ...rec } = item;
       const before = JSON.stringify(known);
       const event = mergeSighting(pool, rec);
       if (JSON.stringify(pool[rec.id]) !== before) changed = true;
       const hot = rec.tier === 'STEAL' || rec.tier === 'FREE';
-      if (event === 'new' && hot && !rec.scam) notify(`${rec.tier}: $${rec.price} ${rec.cat}`, rec);
+      if (event === 'new' && hot && !rec.scam) notify(`${rec.tier}: $${rec.price} ${rec.modelName || rec.cat}`, rec);
       if (event === 'drop' && rec.tier !== 'PASS') notify(`PRICE DROP: $${pool[rec.id].dropFrom} → $${rec.price}`, rec);
     });
     if (changed) savePool(pool);
+    if (JSON.stringify(market) !== marketBefore) GM_setValue(MARKET_KEY, market);
     renderPanel();
   }
 
@@ -385,7 +561,7 @@
       document.body.appendChild(panel);
     }
     const u = ui();
-    const all = Object.values(loadPool()).filter(r => r.status !== 'hidden' && r.tier !== 'PARTS');
+    const all = Object.values(loadPool()).filter(r => r.status !== 'hidden' && r.tier !== 'PARTS' && r.tier !== 'SOLD');
     const cats = [...new Set(all.map(r => r.cat))].sort();
     const q = u.q.toLowerCase();
     let items = all.filter(r =>
@@ -420,9 +596,10 @@
           <div style="display:flex;gap:6px;align-items:baseline">
             <a href="${esc(safeUrl(r.url))}" target="_blank" rel="noopener" style="flex:1;color:inherit;text-decoration:none">
               <b>$${esc(r.price)}</b>${r.dropFrom ? ` <s style="opacity:.6">$${esc(r.dropFrom)}</s> <span style="color:#4ade80">▼</span>` : ''}
-              · ${esc(r.tier)} · ${esc(r.cat)}${r.qty > 1 ? ` ×${esc(r.qty)}` : ''}
+              · ${esc(r.tier)}${r.below > 0 ? ` −${esc(r.below)}%` : ''} · ${esc(r.modelName || r.cat)}${r.qty > 1 ? ` ×${esc(r.qty)}` : ''}
               <span style="opacity:.6">[${esc(r.site)}${r.alsoOn.map(o => '+' + esc(o.site)).join('')}] ${esc(r.location)}${r.miles != null ? ` · ${esc(r.miles)} mi` : ''}</span>
               ${r.scam ? '<span style="color:#c4b5fd"> ⚠ scam?</span>' : ''}<br>${esc(r.title)}
+              ${(r.notes || []).length || r.local ? `<br><span style="opacity:.6;font-size:11px">${esc([...(r.notes || []), r.local ? `local median $${r.local}` : ''].filter(Boolean).join(' · '))}</span>` : ''}
             </a>
             <button style="${btn}" data-a="offer" data-id="${esc(r.id)}" title="Copy a message for the seller and open the listing">${r.offer && r.offer < r.price ? 'Offer $' + esc(r.offer) : 'Msg'}</button>
             <button style="${btn}" data-a="watch" data-id="${esc(r.id)}" title="Watch">${r.status === 'watch' ? '★' : '☆'}</button>
@@ -494,9 +671,9 @@
 
   // Settings changed → recompute tier/value/distance for everything already saved.
   function rescoreAll() {
-    const c = cfg(), pool = loadPool();
+    const c = cfg(), pool = loadPool(), market = loadMarket();
     for (const [id, r] of Object.entries(pool)) {
-      const s = score({ ...r, miles: undefined }, c);
+      const s = score({ ...r, miles: undefined }, c, market);
       if (s) pool[id] = { ...r, ...s };
     }
     savePool(pool);
@@ -510,6 +687,7 @@
       const data = JSON.parse(text);
       if (data.pool) savePool({ ...loadPool(), ...data.pool });
       if (data.cfg) GM_setValue(CFG_KEY, data.cfg);
+      if (data.market) GM_setValue(MARKET_KEY, { ...loadMarket(), ...data.market });
       renderPanel();
     } catch (e) { alert('Invalid backup: ' + e.message); }
   }
@@ -522,7 +700,7 @@
     hide: id => setStatus(id, 'hidden'),
     offer: id => { const r = loadPool()[id]; if (r) { copy(offerMessage(r, cfg())); window.open(safeUrl(r.url), '_blank', 'noopener'); } },
     csv: () => download(`deals-${new Date().toISOString().slice(0, 10)}.csv`, toCSV(Object.values(loadPool()).sort(SORTS.value)), 'text/csv'),
-    backup: () => download(`deal-hunter-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ cfg: gmGet(CFG_KEY, {}), pool: loadPool() }), 'application/json'),
+    backup: () => download(`deal-hunter-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ cfg: gmGet(CFG_KEY, {}), pool: loadPool(), market: loadMarket() }), 'application/json'),
     unhide: () => { const p = loadPool(); Object.values(p).forEach(r => { if (r.status === 'hidden') r.status = 'new'; }); savePool(p); renderPanel(); },
     clear: () => { if (confirm('Clear all saved finds (watched too)?')) { savePool({}); renderPanel(); } },
   };
