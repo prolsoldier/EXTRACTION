@@ -1,0 +1,81 @@
+desc:TrapMetal Vocal Grit (parallel distortion + Haas width)
+tags:distortion vocal
+
+// One-plugin starting point for rage / trap-metal / emo-trap vocals:
+//
+//   Low Cut       high-pass on the whole vocal (two 6 dB/oct stages) to clear rumble and plosives
+//   Grit          a parallel distortion path: high-passed (12 dB/oct, to keep boomy low-mids out of the
+//                 distortion), driven hard into a soft clipper, low-passed, then blended UNDER the clean
+//                 vocal. This is how you get aggression without losing the words. The clean vocal is
+//                 untouched by the grit path, but the grit path is not a strict crossover: it still
+//                 distorts whatever gets past its high-pass.
+//   Width         delays the right channel by a few milliseconds (Haas effect) to spread a mono vocal
+//
+// The Haas delay makes the vocal sound thinner / phasey if it is summed to mono, so check in mono.
+// Put it on a stereo vocal track (mono sources are fine: REAPER feeds the same signal to both channels).
+// Install: copy to <REAPER resource path>/Effects/, then add "JS: TrapMetal Vocal Grit".
+// Not run inside REAPER by the author; the maths was checked against a Python model.
+
+slider1:80<20,300,1>Low Cut (Hz)
+slider2:24<0,48,0.1>Grit Drive (dB)
+slider3:25<0,100,1>Grit Blend (%)
+slider4:400<100,2000,1>Grit High-pass (Hz)
+slider5:7000<2000,16000,10>Grit Low-pass (Hz)
+slider6:12<0,30,0.5>Width (ms, 0 = off)
+slider7:0<-24,12,0.1>Output (dB)
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+@init
+function sat(x) (
+  x / (1 + abs(x));
+);
+
+bufsize = 8192;   // covers 30 ms up to 192 kHz
+buf = 0;          // delay line lives at memory[0 .. bufsize-1]
+wr = 0;
+
+cut1_0 = 0; cut2_0 = 0; cut1_1 = 0; cut2_1 = 0;       // low-cut states (per channel)
+gh1_0 = 0; gh2_0 = 0; gh1_1 = 0; gh2_1 = 0;            // grit high-pass states (two stages)
+glp_0 = 0; glp_1 = 0;                                  // grit low-pass states
+
+@slider
+cut_a = 1 - exp(-2 * $pi * slider1 / srate);
+drive = 10 ^ (slider2 / 20);
+blend = slider3 / 100;
+ghp_a = 1 - exp(-2 * $pi * slider4 / srate);
+glp_a = 1 - exp(-2 * $pi * slider5 / srate);
+dly = min(floor(slider6 * 0.001 * srate), bufsize - 1);
+outgain = 10 ^ (slider7 / 20);
+
+@sample
+// Low cut: x - lowpass, twice
+cut1_0 += cut_a * (spl0 - cut1_0);   c0 = spl0 - cut1_0;
+cut2_0 += cut_a * (c0 - cut2_0);     c0 = c0 - cut2_0;
+cut1_1 += cut_a * (spl1 - cut1_1);   c1 = spl1 - cut1_1;
+cut2_1 += cut_a * (c1 - cut2_1);     c1 = c1 - cut2_1;
+
+// Grit path
+gh1_0 += ghp_a * (c0 - gh1_0);   h0 = c0 - gh1_0;
+gh2_0 += ghp_a * (h0 - gh2_0);   h0 = h0 - gh2_0;      g0 = sat(h0 * drive);
+gh1_1 += ghp_a * (c1 - gh1_1);   h1 = c1 - gh1_1;
+gh2_1 += ghp_a * (h1 - gh2_1);   h1 = h1 - gh2_1;      g1 = sat(h1 * drive);
+glp_0 += glp_a * (g0 - glp_0);
+glp_1 += glp_a * (g1 - glp_1);
+
+o0 = c0 + glp_0 * blend;
+o1 = c1 + glp_1 * blend;
+
+// Haas width on the right channel
+buf[wr] = o1;
+rd = wr - dly;
+rd < 0 ? rd += bufsize;
+o1 = dly > 0 ? buf[rd] : o1;
+wr += 1;
+wr >= bufsize ? wr = 0;
+
+spl0 = o0 * outgain;
+spl1 = o1 * outgain;
