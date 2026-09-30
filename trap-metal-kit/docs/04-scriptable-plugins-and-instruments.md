@@ -6,6 +6,10 @@ Kontakt 8, Serato Sample 2, ShaperBox 3, Decimort 2) plus anything scriptable. I
 **Legend** — ✅ checked against the vendor's docs or release notes this session · 📰 taken from a review/blog article
 (source named; some are vendor or affiliate sites) · ❓ lead I did not verify.
 
+> **You already own** the Unison plugins (MIDI Wizard, Chord Genie, Drum Monkey, Bass Dragon, 808 Machine, Unisynth,
+> Sound Doctor, Mangler), Nectar 4 and Ozone 12 — so section B below leaves out overlapping recommendations. See
+> `docs/07-vocal-automation-and-plugins.md` for how they fit the automated pipeline and what gaps remain.
+
 ## A. Things you can actually script
 
 | Tool | How it's scripted | What's in this kit | Status |

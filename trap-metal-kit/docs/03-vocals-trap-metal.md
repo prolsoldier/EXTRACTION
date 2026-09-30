@@ -10,6 +10,7 @@ These are **generic starting points** from common mixing practice. They are not 
 | **Lil Darkie** | "Animated cartoon experimental trap metal artist from Long Beach, California" (Joshua Hamilton). | YouTube description; his SoundCloud lists a "TRAP METAL" track |
 | **YNG Martyr** | Australian rapper based in Melbourne (Seaton Rogers); known for a distinctive style and unconventional marketing. | [Wikipedia](https://en.wikipedia.org/wiki/YNG_Martyr) |
 | **NIKKO** | A NIKKO appears on SCREAM RAP releases ("SCREAM & NIKKO – STIFF", "GUTS"); SoundCloud/X handle `NIKKO-nrg` / `@NIKKOnrg`. I can't be sure this is the NIKKO you mean. | YouTube, SoundCloud, X search results |
+| **Gashum** | "Multi-faceted music artist known for his unique sound that features bass heavy beats, with dark lyrics and vocals" (Genius). SoundCloud: GUTTER (prod. DINCA), GOTH GIRLS (prod. KASUMI), 0837 (feat. Depth Strida, prod. MUTRICK). Apple Music: "Gutter" (2022), "Gas Chamber" (2024). One post describes another artist as "dollbreaker met Gashum" with "distorted production, and aggressive delivery". No published vocal chain found. | Genius, SoundCloud, Apple Music, Instagram results — see `docs/07` |
 | **Zedexiah** | **No match found.** Searches returned "Zedekiah" results that look unrelated. Send me a link to a track and I'll build notes from that. | — |
 
 ## 1. Tracking setup (do this before any plugin)
