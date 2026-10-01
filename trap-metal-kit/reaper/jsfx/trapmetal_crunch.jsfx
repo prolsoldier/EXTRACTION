@@ -1,0 +1,123 @@
+desc:TrapMetal Crunch (drive / fold / crush, clean lows)
+tags:distortion
+
+// Distortion for 808s, guitars, synth leads and buses in trap metal / rage / hyperpop.
+//
+//   Drive        gain into an asymmetric soft-clipper (x/(1+|x|)); more drive = closer to hard clipping
+//   Asymmetry    makes the negative half clip harder: adds even harmonics (a DC blocker removes the offset)
+//   Fold         blends in a sine wavefolder for metallic, screamy overtones
+//   Crush        lowers bit depth (16 -> 2 bits) and sample rate (hold up to 16 samples): 8-bit hyperpop grit
+//   Keep Lows    a 24 dB/oct Linkwitz-Riley crossover: everything below this frequency bypasses the
+//                distortion, everything above is destroyed. The two bands sum back to a flat (all-pass)
+//                response, so nothing is lost or doubled at the crossover. Use it to keep an 808's sub
+//                clean while its harmonics get crushed. 0 = distort the whole signal.
+//   Tone         low-pass after the distortion to tame fizz
+//
+// No oversampling, so high drive aliases. At these settings that is part of the sound, not a bug.
+// Install: copy to <REAPER resource path>/Effects/ (Options > Show REAPER resource path), then add "JS: TrapMetal Crunch".
+// Not run inside REAPER by the author; the maths was checked against a Python model.
+
+slider1:18<0,48,0.1>Drive (dB)
+slider2:0.3<0,1,0.01>Asymmetry
+slider3:0<0,1,0.01>Fold
+slider4:0<0,1,0.01>Crush
+slider5:120<0,400,1>Keep Lows Clean Below (Hz, 0 = off)
+slider6:9000<1000,20000,10>Tone (Low-pass Hz)
+slider7:100<0,100,1>Mix (%)
+slider8:-6<-24,12,0.1>Output (dB)
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+@init
+// x/(1+|x|) on the positive side; the negative side is pre-scaled by k so it clips harder when k > 1.
+function shape(x, k) (
+  x >= 0 ? x / (1 + x) : (x * k) / (1 - x * k);
+);
+
+// One biquad stage. `st` is an offset into memory holding two state values; the five coefficients are passed in.
+function biquad(x, st, cb0, cb1, cb2, ca1, ca2) (
+  bq_y = cb0 * x + st[0];
+  st[0] = cb1 * x - ca1 * bq_y + st[1];
+  st[1] = cb2 * x - ca2 * bq_y;
+  bq_y;
+);
+
+// Memory map for filter states: 8 stages x 2 values, starting at 0.
+//   left:  LP stage1 @0, LP stage2 @2, HP stage1 @4, HP stage2 @6
+//   right: LP stage1 @8, LP stage2 @10, HP stage1 @12, HP stage2 @14
+memset(0, 0, 16);
+
+drv = 1;          // smoothed drive gain
+cnt = 0;          // sample-and-hold counter (shared by both channels)
+held0 = 0; held1 = 0;
+tone0 = 0; tone1 = 0;
+dcx0 = 0; dcy0 = 0; dcx1 = 0; dcy1 = 0;
+
+@slider
+drive_t = 10 ^ (slider1 / 20);
+asym_k = 1 + slider2 * 3;
+fold = slider3;
+crush = slider4;
+split_on = slider5 > 0;
+tone_a = 1 - exp(-2 * $pi * slider6 / srate);
+mix = slider7 / 100;
+outgain = 10 ^ (slider8 / 20);
+step = 2 / (2 ^ (16 - 14 * crush));      // quantiser step for bit reduction
+hold_n = 1 + floor(crush * 15);          // sample-rate reduction factor
+dc_r = 1 - 2 * $pi * 20 / srate;         // DC blocker corner ~20 Hz
+
+// Butterworth (Q = 0.7071) biquads; two in series per band make a Linkwitz-Riley 4th-order filter.
+split_on ? (
+  w0 = 2 * $pi * min(slider5, srate * 0.45) / srate;
+  cw = cos(w0);
+  alpha = sin(w0) / (2 * 0.70710678);
+  a0 = 1 + alpha;
+  ca1 = -2 * cw / a0;
+  ca2 = (1 - alpha) / a0;
+  lpb0 = (1 - cw) / 2 / a0;  lpb1 = (1 - cw) / a0;   lpb2 = lpb0;
+  hpb0 = (1 + cw) / 2 / a0;  hpb1 = -(1 + cw) / a0;  hpb2 = hpb0;
+);
+
+@sample
+drv += 0.002 * (drive_t - drv);
+
+x0 = spl0; x1 = spl1;
+
+split_on ? (
+  low0 = biquad(biquad(x0, 0, lpb0, lpb1, lpb2, ca1, ca2), 2, lpb0, lpb1, lpb2, ca1, ca2);
+  hi0  = biquad(biquad(x0, 4, hpb0, hpb1, hpb2, ca1, ca2), 6, hpb0, hpb1, hpb2, ca1, ca2);
+  low1 = biquad(biquad(x1, 8, lpb0, lpb1, lpb2, ca1, ca2), 10, lpb0, lpb1, lpb2, ca1, ca2);
+  hi1  = biquad(biquad(x1, 12, hpb0, hpb1, hpb2, ca1, ca2), 14, hpb0, hpb1, hpb2, ca1, ca2);
+) : (
+  low0 = 0; low1 = 0; hi0 = x0; hi1 = x1;
+);
+
+y0 = shape(hi0 * drv, asym_k);
+y1 = shape(hi1 * drv, asym_k);
+
+fold > 0 ? (
+  y0 = (1 - fold) * y0 + fold * sin(y0 * (1 + fold * 5) * 1.5708);
+  y1 = (1 - fold) * y1 + fold * sin(y1 * (1 + fold * 5) * 1.5708);
+);
+
+crush > 0 ? (
+  cnt += 1;
+  cnt >= hold_n ? (
+    cnt = 0;
+    held0 = step * floor(y0 / step + 0.5);
+    held1 = step * floor(y1 / step + 0.5);
+  );
+  y0 = held0; y1 = held1;
+);
+
+tone0 += tone_a * (y0 - tone0);  tone1 += tone_a * (y1 - tone1);
+
+// DC blocker (the asymmetric shaper creates an offset)
+d0 = tone0 - dcx0 + dc_r * dcy0;  dcx0 = tone0;  dcy0 = d0;
+d1 = tone1 - dcx1 + dc_r * dcy1;  dcx1 = tone1;  dcy1 = d1;
+
+spl0 = (x0 * (1 - mix) + (low0 + d0) * mix) * outgain;
+spl1 = (x1 * (1 - mix) + (low1 + d1) * mix) * outgain;
