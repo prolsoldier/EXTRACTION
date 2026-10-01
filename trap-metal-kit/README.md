@@ -10,6 +10,10 @@ so the key-mapped DJ rig doesn't need paid software.
 
 | Path | What it does | Works in |
 |---|---|---|
+| `fl-studio/device_TrapMetalKit.py` | **All four FL Studio scripts in one file, on one MIDI input** (FL runs one script per input). DJ keys 36-71, probe 72, audit 73, vocal setup 74, repaint 75, mod-wheel crossfader. Setup/repaint need a second press. Generated; edit the CONFIG block | FL Studio |
+| `tools/install_fl_studio.py` | Finds FL's `Settings/Hardware` folder and installs / backs up / uninstalls the scripts (`--dry-run`, `--standalone`, `--dest`) | Windows, macOS, Wine |
+| `tools/build_fl_bundle.py` | Rebuilds the one-file bundle from the four `device_*.py` sources (`--check` for CI) | any |
+| `tools/check_fl_api.py` | Checks every FL call in the scripts against Image-Line's published API stubs | any (`pip install fl-studio-api-stubs`) |
 | `kontakt/map_folder_to_keys.lua` | Maps every audio file in a folder to its own key (loops, optional tempo sync from `..._140_BPM.wav` names) | Kontakt 8 (Lua API) |
 | `packs/packs_to_sfz.py` | **Multiple packs on the same keys**, chosen by keyswitch | sfizz, Sforzando, other SFZ players |
 | `packs/packs_to_dspreset.py` | Same, with a **dropdown menu** + keyswitches; optional Bits/Rate/Fold knobs | DecentSampler (free) |
@@ -25,9 +29,18 @@ so the key-mapped DJ rig doesn't need paid software.
 | `tools/gen_808.py` | Distorted 808 one-shots at any MIDI notes | any sampler |
 | `tools/gen_wavetables.py` | `rage_fold`, `vowel_morph`, `crushed_lead` wavetables (2048 samples/frame) | Vital, Serum, other wavetable synths |
 | `mcp/probe_mcp.py` | Asks a local MCP server (Kontakt 8.13+ on port 3006) what it speaks and prints the `claude mcp add` command | any MCP-over-HTTP server |
-| `docs/` | `01` Kontakt MCP · `02` DJ instruments · `03` vocals + artist notes · `04` scriptable plugins · `05` DAW MCP servers · `06` pink theme · `07` **automated vocal/mix/master pipeline (start here for Nectar 4 + Ozone 12)** | — |
+| `docs/` | **`00` FL Studio quickstart (start here)** · `01` Kontakt MCP · `02` DJ instruments · `03` vocals + artist notes · `04` scriptable plugins · `05` DAW MCP servers · `06` pink theme · `07` **automated vocal/mix/master pipeline (start here for Nectar 4 + Ozone 12)** | — |
 
 ## Quick start
+
+**FL Studio, ready to go** (full walk-through: [`docs/00-fl-studio-quickstart.md`](docs/00-fl-studio-quickstart.md)):
+```bash
+python3 tools/install_fl_studio.py          # installs "Trap Metal Kit" into FL's Settings/Hardware folder
+# FL Studio > Options > MIDI Settings (F10): pick your keyboard, tick Enable,
+#   Controller type = "Trap Metal Kit (user)", set a Port. View > Script output should say "Trap Metal Kit: ready".
+```
+
+The rest of the kit:
 ```bash
 # 1. Make some 808s in two flavours and turn them into a two-pack instrument
 python3 tools/gen_808.py --note 24 28 31 33 --drive 3  -d packs_demo/packs/808s_clean
@@ -46,9 +59,10 @@ python3 tools/scan_audio_setup.py --redact-user
 python3 tools/master_batch.py prep takes/ -o prepped/
 python3 tools/master_batch.py measure exports/ --lufs -9 --ceiling -1 --strict
 ```
-In FL Studio, assign the `fl-studio/device_*.py` scripts to MIDI inputs (see each file's header). With
-`device_VocalSetup.py` assigned, note 126 builds the vocal mixer and note 125 audits the chain; with
-`device_PluginProbe.py`, note 124 prints every plugin and parameter. Full walk-through: `docs/07`.
+The four standalone scripts (`fl-studio/device_TrapDJ.py`, `device_VocalSetup.py`, `device_PluginProbe.py`,
+`device_PinkTheme.py`) still work one per MIDI input (`install_fl_studio.py --standalone`). Standalone, the vocal setup
+is note 126, the audit 125 and the probe 124 (above most keyboards' range; the bundle uses 72-75 instead). Vocal
+workflow: `docs/07`.
 Load `dj_keys.sfz` in sfizz/Sforzando (keyswitches 34/35 pick the pack) or `dj_keys.dspreset` in DecentSampler (menu or
 keyswitch). For Kontakt, see the header of `kontakt/map_folder_to_keys.lua`; for FL Studio, the header of
 `fl-studio/device_TrapDJ.py`.
@@ -67,6 +81,9 @@ been loaded into a real host**. What was tested:
 |---|---|
 | Kontakt Lua script | Run against a mock of the Kontakt Lua API (sorting, key assignment, overrides, error handling) |
 | FL Studio scripts (DJ, PinkTheme, VocalSetup, PluginProbe) | Run against stubs of the FL modules: note→clip mapping, colour order and cycle, routing/sends/arming, the chain audit, and that the probe never writes. Mutation-checked. |
+| FL Studio API conformance | `tools/check_fl_api.py` against Image-Line's published stubs (`fl-studio-api-stubs` 37.0.1): every FL function exists, every call's arguments fit the real signature, every `midi.*` constant exists, every `On...` callback is one FL calls. Mutation-checked. This is the only check that is independent of this kit's own stand-ins; it proves the calls are valid, **not** that FL behaves as the scripts expect |
+| One-file bundle | Dispatch of every key / CC / idle callback to the right part, the press-twice guard (with a fake clock), conflict warnings for overlapping notes and mixer inserts, settings overrides, one part failing without stopping the others, embedded sources identical to the standalone scripts, committed bundle identical to a fresh build. Mutation-checked |
+| Installer | Temp-folder runs: folder detection (Documents, OneDrive, Wine), install, idempotence, backup of an edited copy, dry run, uninstall (keeps backups, never touches other controllers' scripts) |
 | REAPER `key_slots.lua` | Run against a mock of the ReaScript API |
 | JSFX plugins | Their algorithms re-implemented in Python (`tests/jsfx_model.py`): crossover sums flat, sub survives, DC removed, delay length exact. **The JSFX syntax itself has not been run.** |
 | SFZ / DecentSampler generators | Real WAV files in, output files parsed and checked structurally. **Not loaded in a player**; DecentSampler has a built-in *Validate preset file* tool, use it |
@@ -83,6 +100,7 @@ doesn't spell out. Expect to adjust them after a first run.
 ```bash
 pip install lupa                                   # Lua tests
 pip install numpy scipy soundfile pyloudnorm       # mastering tool tests (skipped if missing)
+pip install fl-studio-api-stubs                    # FL API conformance tests (skipped if missing)
 python3 -m unittest discover -s tests
 ```
 Python 3.9+ (developed on 3.11). The generators, pack builders, scanner and FL/REAPER scripts use only the standard

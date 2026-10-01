@@ -63,7 +63,7 @@ def load(plugin_slots=None, **kwargs):
     module_mixer = types.SimpleNamespace(**functions)
     sys.modules["mixer"] = module_mixer
     if plugin_slots is None:
-        sys.modules.pop("plugins", None)
+        sys.modules["plugins"] = None   # makes `import plugins` raise ImportError even if the real FL stubs are installed
     else:
         stub_plugins = StubPlugins(plugin_slots)
         sys.modules["plugins"] = types.SimpleNamespace(isValid=stub_plugins.isValid, getPluginName=stub_plugins.getPluginName)

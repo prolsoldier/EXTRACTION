@@ -4,6 +4,8 @@ You said you have (almost) every **Unison** plugin, plus **Nectar 4** and **Ozon
 them, with the boring parts scripted. I can't see your PC, so what I know about your setup comes from what you told me
 and from the vendors' own pages; `tools/scan_audio_setup.py` will show me the rest (see the end).
 
+> **Using the one-file bundle** (`device_TrapMetalKit.py`, see [00-fl-studio-quickstart.md](00-fl-studio-quickstart.md))? The keys are **72** (probe), **73** (audit) and **74** (vocal setup, press twice) instead of 124 / 125 / 126 below, and the pink repaint is **75**. Everything else in this document is the same.
+
 ## What is automated, what is assisted, what is still you
 
 | Step | Who does it | Tool |

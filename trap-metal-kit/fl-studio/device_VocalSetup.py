@@ -1,7 +1,7 @@
 # name=Vocal Session Setup
 """FL Studio MIDI-controller script: builds a vocal recording/mixing layout in the Mixer with one key press.
 
-Press SETUP_NOTE (default 126, F#8) on the assigned MIDI input and it will, on mixer inserts FIRST_INSERT and up:
+Press SETUP_NOTE (default 126 = F#10 in FL's note names) on the assigned MIDI input and it will, on mixer inserts FIRST_INSERT and up:
 
     * name and colour each insert (pink / purple / red palette to match device_PinkTheme.py)
     * route every vocal insert to the VOX BUS insert (and switch off its direct route to Master)

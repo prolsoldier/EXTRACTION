@@ -2,7 +2,7 @@
 """FL Studio MIDI-controller script: READ-ONLY. Lists every plugin loaded in your mixer slots and the parameters
 FL can see on each, so you know exactly what can be automated (Nectar 4, Ozone 12, Unison Mangler, ...).
 
-Press PROBE_NOTE (default 124, E8) on the assigned MIDI input. Output goes to View > Script output:
+Press PROBE_NOTE (default 124 = E10 in FL's note names) on the assigned MIDI input. Output goes to View > Script output:
 
     track 0 (Master) slot 0: Ozone 12   (57 params)
         [0] Bypass = 0.0

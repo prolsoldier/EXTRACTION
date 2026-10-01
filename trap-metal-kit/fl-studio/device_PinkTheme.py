@@ -46,6 +46,7 @@ MAX_MIXER_INSERTS = 64      # paint at most this many inserts (index 1 upwards)
 PLAYLIST_TRACKS = 64        # paint playlist tracks 1..N (FL has 500)
 MASTER_COLOR = "hot_pink"   # mixer master track
 REPAINT_NOTE = None         # set to a MIDI note number (e.g. 127) to repaint everything when it is pressed
+PAINT_ON_START = True       # False: leave existing colours alone at start-up (new channels/patterns still get painted)
 IDLE_CHECK_EVERY = 20       # OnIdle calls between "did anything get added?" checks
 
 
@@ -104,7 +105,13 @@ def paint_all():
 
 
 def OnInit():
-    paint_all()
+    # FL may call OnInit again on a script it kept in memory (see the callbacks docs), so start from a clean state.
+    _state.update(channels=0, patterns=0, idle=0)
+    if PAINT_ON_START:
+        paint_all()
+    else:  # remember what exists now so OnIdle only paints what is added later
+        _state["channels"] = channels.channelCount(1)
+        _state["patterns"] = patterns.patternCount()
 
 
 def OnIdle():

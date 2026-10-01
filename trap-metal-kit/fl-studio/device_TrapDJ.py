@@ -6,7 +6,7 @@ and each block on that track is a different song/loop/stem. Pressing another key
 same row blends the next piece in on the beat. A CC (mod wheel by default) crossfades two
 mixer tracks.
 
-Layout (FIRST_NOTE = 36 by default, i.e. C1 in FL's naming):
+Layout (FIRST_NOTE = 36 by default, i.e. C3 in FL's naming, where middle C = 60 = C5):
 
     keys 36..43   -> playlist track 1, blocks 0..7     (row 1 / deck 1)
     keys 44..51   -> playlist track 2, blocks 0..7     (row 2 / deck 2)
@@ -18,9 +18,11 @@ Setup:
          Documents/Image-Line/FL Studio/Settings/Hardware/TrapDJ/device_TrapDJ.py
     2. FL Studio > Options > MIDI Settings: pick your keyboard as an input, set
        Controller type to "Trap DJ Keys", and give it a port number.
-    3. Playlist: enable Performance Mode (Tools > Performance mode settings...), drop your
-       audio clips on tracks, add Live block markers, and right-click each track's
-       performance settings: set "Trigger sync" to a bar and "Press" to Latch or Hold.
+    3. Playlist: switch on Performance mode (Playlist menu > Performance mode, or Ctrl+P). Put
+       your audio clips on the tracks inside the Performance Zone (left of the Start marker; only
+       clips there can be triggered) and add Live block markers. Then right-click each track
+       header > Performance settings: set "Trigger sync" to a bar value and "Press" to Latch
+       (or Hold & stop). Those settings only appear while Performance mode is on.
     4. Route playlist track 1 -> mixer insert DECK_A_MIXER and track 2 -> DECK_B_MIXER
        if you want the crossfader.
 
@@ -49,7 +51,10 @@ DECK_A_MIXER = 1    # mixer insert that carries deck A (left side of the crossfa
 DECK_B_MIXER = 2    # mixer insert that carries deck B (right side)
 UNITY_VOLUME = 0.8  # FL's normalised mixer volume for 0 dB
 
-STOP_FIRST_NOTE = FIRST_NOTE + ROWS * COLUMNS
+
+def stop_first_note():
+    """MIDI note of the first stop key. Worked out on demand so FIRST_NOTE / ROWS / COLUMNS can be changed later."""
+    return FIRST_NOTE + ROWS * COLUMNS
 
 
 def slot_for_note(note):
@@ -57,8 +62,9 @@ def slot_for_note(note):
     index = note - FIRST_NOTE
     if 0 <= index < ROWS * COLUMNS:
         return ("play", TRACK_BASE + index // COLUMNS, index % COLUMNS)
-    if STOP_FIRST_NOTE <= note < STOP_FIRST_NOTE + ROWS:
-        return ("stop", TRACK_BASE + (note - STOP_FIRST_NOTE))
+    stop_first = stop_first_note()
+    if stop_first <= note < stop_first + ROWS:
+        return ("stop", TRACK_BASE + (note - stop_first))
     return None
 
 
@@ -69,8 +75,9 @@ def crossfade_gains(position):
 
 
 def OnInit():
+    stop_first = stop_first_note()
     print("Trap DJ Keys: notes %d-%d launch clips, %d-%d stop decks"
-          % (FIRST_NOTE, STOP_FIRST_NOTE - 1, STOP_FIRST_NOTE, STOP_FIRST_NOTE + ROWS - 1))
+          % (FIRST_NOTE, stop_first - 1, stop_first, stop_first + ROWS - 1))
     try:
         if not playlist.getPerformanceModeState():
             print("Trap DJ Keys: Performance Mode is off - enable it or clips will not launch")
